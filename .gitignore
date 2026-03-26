@@ -1,0 +1,59 @@
+# ==============================================================================
+# .gitignore — Time Series Forecasting Project
+# ==============================================================================
+
+# ----- Python -----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ----- Virtual Environments -----
+.venv/
+venv/
+env/
+ENV/
+
+# ----- Data (large files — track with DVC or Git LFS) -----
+data/raw/*
+data/interim/*
+data/processed/*
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+
+# ----- Trained Models -----
+models/*
+!models/.gitkeep
+
+# ----- Logs -----
+logs/*
+!logs/.gitkeep
+
+# ----- Jupyter Notebooks -----
+.ipynb_checkpoints/
+
+# ----- IDE / Editor -----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ----- OS -----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ----- Environment Variables -----
+.env
+.env.*
+
+# ----- Coverage & Testing -----
+htmlcov/
+.coverage
+.pytest_cache/

@@ -1,0 +1,126 @@
+# ==============================================================================
+# Time Series Forecasting Project Configuration
+# ==============================================================================
+# This file centralizes all parameters. Avoid hardcoding values in source code.
+# Usage: Load with `yaml.safe_load(open('configs/config.yaml'))`
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Project Metadata
+# ------------------------------------------------------------------------------
+project:
+  name: "video_game_concurrent_players_forecast"
+  version: "1.0.0"
+  description: "Forecasting concurrent player counts for server capacity planning"
+  random_seed: 42
+
+# ------------------------------------------------------------------------------
+# Data Paths
+# ------------------------------------------------------------------------------
+data:
+  raw_dir: "data/raw"
+  interim_dir: "data/interim"
+  processed_dir: "data/processed"
+  raw_file: "data/raw/concurrent_players.csv"
+  processed_file: "data/processed/concurrent_players_clean.csv"
+
+  # Column mapping
+  columns:
+    datetime: "datetime"
+    target: "concurrent_players"
+
+  # Date parsing
+  date_format: "%Y-%m-%d %H:%M:%S"
+
+# ------------------------------------------------------------------------------
+# Preprocessing
+# ------------------------------------------------------------------------------
+preprocessing:
+  # Train/test split ratio (fraction used for training)
+  train_ratio: 0.8
+
+  # Handling missing values: "ffill", "bfill", "interpolate", "drop"
+  missing_strategy: "interpolate"
+
+  # Outlier removal (IQR multiplier, set null to disable)
+  outlier_iqr_multiplier: 1.5
+
+  # Transformations
+  log_transform: false
+  differencing_order: 1
+
+# ------------------------------------------------------------------------------
+# Statistical Tests
+# ------------------------------------------------------------------------------
+statistical_tests:
+  # Augmented Dickey-Fuller test for stationarity
+  adf_significance: 0.05
+
+  # KPSS test for stationarity
+  kpss_significance: 0.05
+
+  # ACF/PACF lags to compute
+  acf_lags: 48
+  pacf_lags: 48
+
+# ------------------------------------------------------------------------------
+# Model Configurations
+# ------------------------------------------------------------------------------
+model:
+  # Active model: "arima", "sarima", "prophet", "lstm"
+  active: "sarima"
+
+  arima:
+    order: [1, 1, 1]           # (p, d, q)
+    auto_order: true            # Use pmdarima auto_arima if true
+
+  sarima:
+    order: [1, 1, 1]           # (p, d, q)
+    seasonal_order: [1, 1, 1, 24]  # (P, D, Q, S) — S=24 for hourly seasonality
+    auto_order: true
+
+  prophet:
+    changepoint_prior_scale: 0.05
+    seasonality_prior_scale: 10.0
+    yearly_seasonality: true
+    weekly_seasonality: true
+    daily_seasonality: true
+
+  lstm:
+    input_window: 48           # Number of past timesteps as input
+    forecast_horizon: 24       # Number of future timesteps to predict
+    hidden_units: 64
+    num_layers: 2
+    dropout: 0.2
+    epochs: 100
+    batch_size: 32
+    learning_rate: 0.001
+    early_stopping_patience: 10
+
+# ------------------------------------------------------------------------------
+# Evaluation
+# ------------------------------------------------------------------------------
+evaluation:
+  metrics:
+    - "rmse"
+    - "mae"
+    - "mape"
+  residual_diagnostics: true    # Run Ljung-Box & normality tests
+  forecast_plot: true           # Generate forecast vs actuals plot
+
+# ------------------------------------------------------------------------------
+# Output Paths
+# ------------------------------------------------------------------------------
+output:
+  model_dir: "models"
+  reports_dir: "reports"
+  figures_dir: "reports/figures"
+  logs_dir: "logs"
+
+# ------------------------------------------------------------------------------
+# Logging
+# ------------------------------------------------------------------------------
+logging:
+  level: "INFO"                 # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_file: "logs/pipeline.log"
+  log_to_console: true
