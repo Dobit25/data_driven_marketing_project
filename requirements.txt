@@ -6,18 +6,17 @@ pandas>=2.0.0
 scipy>=1.11.0
 
 # ==============================================================================
-# Time Series & Statistical Modeling
+# Machine Learning & CLV Modeling
 # ==============================================================================
-statsmodels>=0.14.0
-pmdarima>=2.0.3
-prophet>=1.1.4
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+lightgbm>=4.0.0
+lifetimes>=0.11.3               # BG/NBD + Gamma-Gamma probabilistic CLV models
 
 # ==============================================================================
-# Deep Learning
+# Feature Engineering & Encoding
 # ==============================================================================
-tensorflow>=2.13.0
-# torch>=2.0.0              # Uncomment if using PyTorch-based LSTM
-scikit-learn>=1.3.0
+category_encoders>=2.6.0        # Target encoding for categorical demographics
 
 # ==============================================================================
 # Visualization

@@ -1,112 +1,143 @@
 # ==============================================================================
-# Time Series Forecasting Project Configuration
+# Customer Lifetime Value (CLV) — Dunnhumby Pipeline Configuration
 # ==============================================================================
-# This file centralizes all parameters. Avoid hardcoding values in source code.
-# Usage: Load with `yaml.safe_load(open('configs/config.yaml'))`
+# Centralizes all parameters. Load with:
+#   yaml.safe_load(open('configs/config.yaml'))
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
 # Project Metadata
 # ------------------------------------------------------------------------------
 project:
-  name: "video_game_concurrent_players_forecast"
+  name: "clv_dunnhumby"
   version: "1.0.0"
-  description: "Forecasting concurrent player counts for server capacity planning"
+  description: "Customer Lifetime Value prediction for Data Driven Marketing (DSEB65A Group 6)"
   random_seed: 42
 
 # ------------------------------------------------------------------------------
-# Data Paths
+# Data Paths — Dunnhumby "The Complete Journey"
 # ------------------------------------------------------------------------------
 data:
   raw_dir: "data/raw"
   interim_dir: "data/interim"
   processed_dir: "data/processed"
-  raw_file: "data/raw/concurrent_players.csv"
-  processed_file: "data/processed/concurrent_players_clean.csv"
 
-  # Column mapping
+  # Individual file paths (relative to project root)
+  files:
+    transaction_data: "data/raw/transaction_data.csv"
+    hh_demographic: "data/raw/hh_demographic.csv"
+    campaign_table: "data/raw/campaign_table.csv"
+    campaign_desc: "data/raw/campaign_desc.csv"
+    coupon: "data/raw/coupon.csv"
+    coupon_redempt: "data/raw/coupon_redempt.csv"
+    product: "data/raw/product.csv"
+    causal_data: "data/raw/causal_data.csv"
+
+# ------------------------------------------------------------------------------
+# Temporal Splitting — Calibration / Holdout
+# ------------------------------------------------------------------------------
+splitting:
+  # WEEK_NO ranges from 1 to 102 in the dataset
+  # Calibration: weeks 1–75 (~73%), Holdout: weeks 76–102 (~27%)
+  calibration_end_week: 75
+  total_weeks: 102
+
+# ------------------------------------------------------------------------------
+# RFM Aggregation
+# ------------------------------------------------------------------------------
+rfm:
+  # Entity key — all aggregations use this column
+  entity_key: "household_key"
+
+  # Monetary calculation:
+  #   Gross_Sales = SUM(SALES_VALUE)
+  #   Net_Sales   = SUM(SALES_VALUE + RETAIL_DISC + COUPON_DISC + COUPON_MATCH_DISC)
+  # Note: Discount columns store NEGATIVE values (e.g., RETAIL_DISC = -0.60)
+  monetary_columns:
+    gross: "SALES_VALUE"
+    discounts:
+      - "RETAIL_DISC"
+      - "COUPON_DISC"
+      - "COUPON_MATCH_DISC"
+
+  # Additional features to compute per household
+  extra_features:
+    - "avg_basket_size"           # AVG items per basket
+    - "avg_transaction_value"     # AVG Net_Sales per basket
+    - "distinct_stores"           # Number of unique stores visited
+    - "tenure_weeks"              # Last purchase week - first purchase week
+    - "total_baskets"             # Count of distinct BASKET_IDs
+    - "coupon_usage_rate"         # Fraction of baskets with coupon discounts
+
+# ------------------------------------------------------------------------------
+# Demographics Handling
+# ------------------------------------------------------------------------------
+demographics:
+  # Only 801 / 2500 households have demographic info
+  # Strategy: "flag_and_impute" | "flag_only" | "drop_missing"
+  missing_strategy: "flag_and_impute"
+
+  # Imputation methods (used when strategy = "flag_and_impute")
+  imputation:
+    # Ordinal/numerical demographics — impute with KNN (k=5) using RFM features
+    numerical_method: "knn"
+    knn_neighbors: 5
+
+    # Categorical demographics — impute with mode
+    categorical_method: "mode"
+
+  # Columns and their types for imputation
   columns:
-    datetime: "datetime"
-    target: "concurrent_players"
-
-  # Date parsing
-  date_format: "%Y-%m-%d %H:%M:%S"
-
-# ------------------------------------------------------------------------------
-# Preprocessing
-# ------------------------------------------------------------------------------
-preprocessing:
-  # Train/test split ratio (fraction used for training)
-  train_ratio: 0.8
-
-  # Handling missing values: "ffill", "bfill", "interpolate", "drop"
-  missing_strategy: "interpolate"
-
-  # Outlier removal (IQR multiplier, set null to disable)
-  outlier_iqr_multiplier: 1.5
-
-  # Transformations
-  log_transform: false
-  differencing_order: 1
+    ordinal:
+      AGE_DESC:
+        order: ["19-24", "25-34", "35-44", "45-54", "55-64", "65+"]
+      INCOME_DESC:
+        order: ["Under 15K", "15-24K", "25-34K", "35-49K", "50-74K", "75-99K", "100-124K", "125-149K", "150-174K", "175-199K", "200-249K", "250K+"]
+      HOUSEHOLD_SIZE_DESC:
+        order: ["1", "2", "3", "4", "5+"]
+      KID_CATEGORY_DESC:
+        order: ["None/Unknown", "1", "2", "3+"]
+    categorical:
+      - "MARITAL_STATUS_CODE"
+      - "HOMEOWNER_DESC"
+      - "HH_COMP_DESC"
 
 # ------------------------------------------------------------------------------
-# Statistical Tests
-# ------------------------------------------------------------------------------
-statistical_tests:
-  # Augmented Dickey-Fuller test for stationarity
-  adf_significance: 0.05
-
-  # KPSS test for stationarity
-  kpss_significance: 0.05
-
-  # ACF/PACF lags to compute
-  acf_lags: 48
-  pacf_lags: 48
-
-# ------------------------------------------------------------------------------
-# Model Configurations
+# Model Configurations (for future modeling stage)
 # ------------------------------------------------------------------------------
 model:
-  # Active model: "arima", "sarima", "prophet", "lstm"
-  active: "sarima"
+  # Active model: "bgnbd_gg" | "xgboost" | "lightgbm"
+  active: "bgnbd_gg"
 
-  arima:
-    order: [1, 1, 1]           # (p, d, q)
-    auto_order: true            # Use pmdarima auto_arima if true
+  bgnbd_gg:
+    # BG/NBD parameters (fitted automatically by lifetimes)
+    penalizer_coef: 0.001
 
-  sarima:
-    order: [1, 1, 1]           # (p, d, q)
-    seasonal_order: [1, 1, 1, 24]  # (P, D, Q, S) — S=24 for hourly seasonality
-    auto_order: true
+  xgboost:
+    n_estimators: 500
+    max_depth: 6
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+    early_stopping_rounds: 50
 
-  prophet:
-    changepoint_prior_scale: 0.05
-    seasonality_prior_scale: 10.0
-    yearly_seasonality: true
-    weekly_seasonality: true
-    daily_seasonality: true
-
-  lstm:
-    input_window: 48           # Number of past timesteps as input
-    forecast_horizon: 24       # Number of future timesteps to predict
-    hidden_units: 64
-    num_layers: 2
-    dropout: 0.2
-    epochs: 100
-    batch_size: 32
-    learning_rate: 0.001
-    early_stopping_patience: 10
+  lightgbm:
+    n_estimators: 500
+    max_depth: 6
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+    early_stopping_rounds: 50
 
 # ------------------------------------------------------------------------------
 # Evaluation
 # ------------------------------------------------------------------------------
 evaluation:
   metrics:
-    - "rmse"
     - "mae"
+    - "rmse"
     - "mape"
-  residual_diagnostics: true    # Run Ljung-Box & normality tests
-  forecast_plot: true           # Generate forecast vs actuals plot
+  calibration_plot: true
 
 # ------------------------------------------------------------------------------
 # Output Paths
@@ -121,6 +152,6 @@ output:
 # Logging
 # ------------------------------------------------------------------------------
 logging:
-  level: "INFO"                 # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO"
   log_file: "logs/pipeline.log"
   log_to_console: true
