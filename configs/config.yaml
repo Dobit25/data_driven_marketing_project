@@ -65,7 +65,7 @@ rfm:
     - "avg_basket_size"           # AVG items per basket
     - "avg_transaction_value"     # AVG Net_Sales per basket
     - "distinct_stores"           # Number of unique stores visited
-    - "tenure_weeks"              # Last purchase week - first purchase week
+    - "tenure_days"               # Last purchase day - first purchase day
     - "total_baskets"             # Count of distinct BASKET_IDs
     - "coupon_usage_rate"         # Fraction of baskets with coupon discounts
 
@@ -111,7 +111,7 @@ model:
 
   bgnbd_gg:
     # BG/NBD parameters (fitted automatically by lifetimes)
-    penalizer_coef: 0.001
+    penalizer_coef: 0.05
 
   xgboost:
     n_estimators: 500

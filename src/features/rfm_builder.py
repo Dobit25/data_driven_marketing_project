@@ -18,10 +18,13 @@ Constraints Enforced:
 
 Design Decision:
     RFM for probabilistic CLV models (BG/NBD) uses a specific definition:
-    - Recency (T - last purchase): weeks between last purchase and analysis end
+    - Recency: DAYS since last purchase (relative to analysis end)
     - Frequency: number of REPEAT purchases (total purchases - 1)
     - Monetary: average net revenue PER transaction (excluding first purchase)
-    - T: customer "age" in weeks (analysis_end - first purchase)
+    - T: customer "age" in DAYS (analysis_end_day - first purchase day)
+
+    Using DAYS (instead of weeks) gives finer granularity and avoids
+    extreme Frequency/T ratios that cause BG/NBD convergence failures.
 
     We also compute extended features (avg basket size, store diversity, etc.)
     for supervised ML approaches (XGBoost/LightGBM).
@@ -61,7 +64,7 @@ class RFMBuilder:
     def compute_rfm(
         self,
         transactions: pd.DataFrame,
-        analysis_end_week: Optional[int] = None,
+        analysis_end_day: Optional[int] = None,
     ) -> pd.DataFrame:
         """Compute RFM features aggregated by household_key.
 
@@ -73,10 +76,10 @@ class RFMBuilder:
         ----------
         transactions : pd.DataFrame
             Transaction-level data with columns: household_key, BASKET_ID,
-            WEEK_NO, SALES_VALUE, RETAIL_DISC, COUPON_DISC, COUPON_MATCH_DISC,
-            QUANTITY, STORE_ID, PRODUCT_ID.
-        analysis_end_week : int, optional
-            The last week in the analysis window. Defaults to max WEEK_NO
+            DAY, WEEK_NO, SALES_VALUE, RETAIL_DISC, COUPON_DISC,
+            COUPON_MATCH_DISC, QUANTITY, STORE_ID, PRODUCT_ID.
+        analysis_end_day : int, optional
+            The last DAY in the analysis window. Defaults to max DAY
             in the data.
 
         Returns
@@ -85,14 +88,14 @@ class RFMBuilder:
             Household-level RFM DataFrame with one row per household_key.
             Columns: household_key, Recency, Frequency, T, Gross_Sales,
             Net_Sales, avg_basket_size, avg_transaction_value,
-            distinct_stores, tenure_weeks, total_baskets, coupon_usage_rate.
+            distinct_stores, tenure_days, total_baskets, coupon_usage_rate.
         """
         key = self.entity_key
         logger.info(f"Computing RFM features grouped by '{key}' ...")
 
-        if analysis_end_week is None:
-            analysis_end_week = int(transactions["WEEK_NO"].max())
-            logger.info(f"  → analysis_end_week auto-set to {analysis_end_week}")
+        if analysis_end_day is None:
+            analysis_end_day = int(transactions["DAY"].max())
+            logger.info(f"  → analysis_end_day auto-set to {analysis_end_day}")
 
         # ------------------------------------------------------------------
         # Step 1: Compute Net_Sales per transaction line
@@ -120,9 +123,10 @@ class RFMBuilder:
         # Step 2: Basket-level aggregation (intermediate step)
         # ------------------------------------------------------------------
         # First aggregate to basket level to compute per-basket metrics
+        # Include DAY for daily-granularity Recency/T computation
         basket_agg = (
             transactions
-            .groupby([key, "BASKET_ID", "WEEK_NO", "STORE_ID"], observed=True)
+            .groupby([key, "BASKET_ID", "DAY", "WEEK_NO", "STORE_ID"], observed=True)
             .agg(
                 basket_gross=("SALES_VALUE", "sum"),
                 basket_net=("_net_line", "sum"),
@@ -139,7 +143,11 @@ class RFMBuilder:
             basket_agg
             .groupby(key, observed=True)
             .agg(
-                # Recency & Tenure
+                # Temporal (DAY-level for Recency/T)
+                first_purchase_day=("DAY", "min"),
+                last_purchase_day=("DAY", "max"),
+
+                # Keep WEEK_NO for reference
                 first_purchase_week=("WEEK_NO", "min"),
                 last_purchase_week=("WEEK_NO", "max"),
 
@@ -163,22 +171,22 @@ class RFMBuilder:
         )
 
         # ------------------------------------------------------------------
-        # Step 4: Compute derived RFM columns
+        # Step 4: Compute derived RFM columns (DAY-based for BG/NBD)
         # ------------------------------------------------------------------
-        # T = customer "age" in weeks (from first purchase to analysis end)
-        hh_agg["T"] = analysis_end_week - hh_agg["first_purchase_week"]
+        # T = customer "age" in DAYS (from first purchase to analysis end)
+        hh_agg["T"] = analysis_end_day - hh_agg["first_purchase_day"]
 
-        # Recency = weeks since last purchase (relative to analysis end)
+        # Recency = DAYS since last purchase (relative to analysis end)
         # Lower recency = more recent purchase = more active customer
-        hh_agg["Recency"] = analysis_end_week - hh_agg["last_purchase_week"]
+        hh_agg["Recency"] = analysis_end_day - hh_agg["last_purchase_day"]
 
         # Frequency for BG/NBD: number of REPEAT purchases (total - 1)
         # BG/NBD requires frequency ≥ 0 (customers with only 1 purchase have freq=0)
         hh_agg["Frequency"] = hh_agg["total_baskets"] - 1
 
-        # Tenure in weeks
-        hh_agg["tenure_weeks"] = (
-            hh_agg["last_purchase_week"] - hh_agg["first_purchase_week"]
+        # Tenure in days
+        hh_agg["tenure_days"] = (
+            hh_agg["last_purchase_day"] - hh_agg["first_purchase_day"]
         )
 
         # Coupon usage rate: fraction of baskets using coupons
@@ -210,7 +218,7 @@ class RFMBuilder:
             "avg_basket_size",
             "avg_transaction_value",
             "distinct_stores",
-            "tenure_weeks",
+            "tenure_days",
             "coupon_usage_rate",
             "first_purchase_week",
             "last_purchase_week",
@@ -279,7 +287,7 @@ class RFMBuilder:
         cols_to_describe = [
             "Recency", "Frequency", "T", "Gross_Sales", "Net_Sales",
             "avg_monetary", "total_baskets", "avg_basket_size",
-            "avg_transaction_value", "distinct_stores", "tenure_weeks",
+            "avg_transaction_value", "distinct_stores", "tenure_days",
             "coupon_usage_rate",
         ]
         existing = [c for c in cols_to_describe if c in rfm.columns]

@@ -1,3 +1,3 @@
 """
-tests — Unit and integration tests for the time series project.
+tests — Unit and integration tests for CLV prediction project.
 """

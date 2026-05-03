@@ -17,6 +17,7 @@ lifetimes>=0.11.3               # BG/NBD + Gamma-Gamma probabilistic CLV models
 # Feature Engineering & Encoding
 # ==============================================================================
 category_encoders>=2.6.0        # Target encoding for categorical demographics
+mlxtend>=0.23.0                 # Apriori / Market Basket Analysis
 
 # ==============================================================================
 # Visualization

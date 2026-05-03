@@ -332,7 +332,7 @@ class EDAPlotter:
         corr_cols = [
             "Recency", "Frequency", "T", "Gross_Sales", "Net_Sales",
             "avg_monetary", "avg_basket_size", "avg_transaction_value",
-            "distinct_stores", "tenure_weeks", "coupon_usage_rate",
+            "distinct_stores", "tenure_days", "coupon_usage_rate",
         ]
         existing = [c for c in corr_cols if c in rfm.columns]
         corr_matrix = rfm[existing].corr()

@@ -175,9 +175,12 @@ def run_pipeline(config_path: str) -> None:
     logger.info("=" * 70)
 
     builder = RFMBuilder(config)
+    # Compute analysis_end_day from DAY column for daily-granularity RFM
+    calibration_end_day = int(cal_transactions["DAY"].max())
+    logger.info(f"  Calibration end day: {calibration_end_day}")
     rfm_calibration = builder.compute_rfm(
         cal_transactions,
-        analysis_end_week=calibration_end_week,
+        analysis_end_day=calibration_end_day,
     )
 
     # Print RFM summary statistics
@@ -199,9 +202,11 @@ def run_pipeline(config_path: str) -> None:
     logger.info("=" * 70)
 
     total_weeks = config["splitting"]["total_weeks"]
+    total_end_day = int(holdout_transactions["DAY"].max())
+    logger.info(f"  Holdout end day: {total_end_day}")
     rfm_holdout = builder.compute_rfm(
         holdout_transactions,
-        analysis_end_week=total_weeks,
+        analysis_end_day=total_end_day,
     )
 
     # Save RFM holdout to interim
@@ -254,7 +259,83 @@ def run_pipeline(config_path: str) -> None:
     )
 
     # ==================================================================
-    # Step 8: Final Summary
+    # Step 8: Causal / Promotional Features (Issue #15)
+    # ==================================================================
+    logger.info("\n" + "=" * 70)
+    logger.info("  [STEP 8] Building Promotional Features (causal_data)")
+    logger.info("=" * 70)
+
+    from src.features.causal_features import CausalFeatureBuilder
+
+    causal_builder = CausalFeatureBuilder(config)
+    promo_features = causal_builder.build_promo_features(
+        cal_transactions, analysis_end_week=calibration_end_week,
+    )
+
+    # Merge promo features into calibration features
+    merged_cal = merged_cal.merge(promo_features, on="household_key", how="left")
+    for col in ["pct_display", "pct_mailer", "promo_sensitivity"]:
+        if col in merged_cal.columns:
+            merged_cal[col] = merged_cal[col].fillna(0)
+
+    # Re-save enriched calibration features
+    cal_out_path = processed_dir / "clv_features_calibration.csv"
+    merged_cal.to_csv(cal_out_path, index=False)
+    logger.info(f"  Re-saved enriched features: {cal_out_path}")
+
+    # ==================================================================
+    # Step 9: CLV Modeling (K-Means + BG/NBD + Gamma-Gamma + XGBoost)
+    # ==================================================================
+    logger.info("\n" + "=" * 70)
+    logger.info("  [STEP 9] CLV Modeling Pipeline")
+    logger.info("=" * 70)
+
+    from src.models.clv_models import CLVModeler
+
+    modeler = CLVModeler(config)
+    clv_result = modeler.run_all(
+        rfm_calibration=rfm_calibration,
+        rfm_holdout=rfm_holdout,
+        full_features=merged_cal,
+    )
+
+    # ==================================================================
+    # Step 10: Model Evaluation (Holdout Validation)
+    # ==================================================================
+    logger.info("\n" + "=" * 70)
+    logger.info("  [STEP 10] Evaluating CLV Predictions Against Holdout")
+    logger.info("=" * 70)
+
+    from src.models.evaluator import CLVEvaluator
+
+    evaluator = CLVEvaluator(config)
+    metrics = evaluator.evaluate(clv_result, rfm_holdout)
+    evaluator.calibration_plot(clv_result, rfm_holdout)
+
+    # ==================================================================
+    # Step 11: Market Basket Analysis (Apriori)
+    # ==================================================================
+    logger.info("\n" + "=" * 70)
+    logger.info("  [STEP 11] Market Basket Analysis")
+    logger.info("=" * 70)
+
+    from src.features.mba_builder import MBABuilder
+
+    # MBA uses full transactions (not split) and product-level data
+    # First merge product info for DEPARTMENT column
+    products = loader.load_products()
+    txn_with_dept = transactions.merge(
+        products[["PRODUCT_ID", "DEPARTMENT"]],
+        on="PRODUCT_ID", how="left",
+    )
+    del products
+
+    mba_builder = MBABuilder(config)
+    mba_rules = mba_builder.run_all(txn_with_dept, item_col="DEPARTMENT")
+    del txn_with_dept
+
+    # ==================================================================
+    # Step 12: Final Summary
     # ==================================================================
     elapsed = time.time() - start_time
     logger.info("\n" + "=" * 70)
@@ -263,7 +344,12 @@ def run_pipeline(config_path: str) -> None:
     logger.info(f"  Total time: {elapsed:.1f} seconds")
     logger.info(f"  Calibration RFM: {len(rfm_calibration):,} households")
     logger.info(f"  Holdout RFM:     {len(rfm_holdout):,} households")
+    logger.info(f"  CLV predictions: {len(clv_result):,} households")
+    logger.info(f"  MBA rules:       {len(mba_rules):,} rules")
     logger.info(f"  Plots saved:     {len(plot_paths)} charts")
+    if metrics:
+        logger.info(f"  Evaluation: MAE=${metrics['mae']:,.2f}, "
+                     f"RMSE=${metrics['rmse']:,.2f}, MAPE={metrics['mape']:.1f}%")
     logger.info("")
     logger.info("  Output files:")
     logger.info(f"    {rfm_cal_path}")
