@@ -175,12 +175,12 @@ def run_pipeline(config_path: str) -> None:
     logger.info("=" * 70)
 
     builder = RFMBuilder(config)
-    # Compute analysis_end_day from DAY column for daily-granularity RFM
-    calibration_end_day = int(cal_transactions["DAY"].max())
-    logger.info(f"  Calibration end day: {calibration_end_day}")
+    # Compute analysis_end_week from WEEK_NO column for weekly-granularity RFM
+    calibration_end_week_actual = int(cal_transactions["WEEK_NO"].max())
+    logger.info(f"  Calibration end week: {calibration_end_week_actual}")
     rfm_calibration = builder.compute_rfm(
         cal_transactions,
-        analysis_end_day=calibration_end_day,
+        analysis_end_week=calibration_end_week_actual,
     )
 
     # Print RFM summary statistics
@@ -202,11 +202,11 @@ def run_pipeline(config_path: str) -> None:
     logger.info("=" * 70)
 
     total_weeks = config["splitting"]["total_weeks"]
-    total_end_day = int(holdout_transactions["DAY"].max())
-    logger.info(f"  Holdout end day: {total_end_day}")
+    holdout_end_week = int(holdout_transactions["WEEK_NO"].max())
+    logger.info(f"  Holdout end week: {holdout_end_week}")
     rfm_holdout = builder.compute_rfm(
         holdout_transactions,
-        analysis_end_day=total_end_day,
+        analysis_end_week=holdout_end_week,
     )
 
     # Save RFM holdout to interim
@@ -309,8 +309,29 @@ def run_pipeline(config_path: str) -> None:
     from src.models.evaluator import CLVEvaluator
 
     evaluator = CLVEvaluator(config)
-    metrics = evaluator.evaluate(clv_result, rfm_holdout)
-    evaluator.calibration_plot(clv_result, rfm_holdout)
+
+    # Evaluate all 3 tiers
+    all_metrics = {}
+    tier_definitions = [
+        ("predicted_clv_baseline", "Tier 1: Rate-based Baseline"),
+        ("predicted_clv_supervised", "Tier 2: XGBoost"),
+        ("predicted_clv_6m", "Tier 3: MBG/NBD x Gamma-Gamma"),
+    ]
+    for col, name in tier_definitions:
+        if col in clv_result.columns:
+            logger.info(f"\n  --- {name} ---")
+            tier_metrics = evaluator.evaluate(
+                clv_result, rfm_holdout, prediction_col=col
+            )
+            all_metrics[name] = tier_metrics
+
+    # Calibration plot for the best available tier
+    best_col = "predicted_clv_supervised" if "predicted_clv_supervised" in clv_result.columns else "predicted_clv_baseline"
+    evaluator.calibration_plot(clv_result, rfm_holdout, prediction_col=best_col)
+
+    # Use best tier metrics for final summary
+    metrics = all_metrics.get("Tier 2: XGBoost",
+              all_metrics.get("Tier 1: Rate-based Baseline", {}))
 
     # ==================================================================
     # Step 11: Market Basket Analysis (Apriori)

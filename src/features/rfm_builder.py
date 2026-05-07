@@ -17,14 +17,15 @@ Constraints Enforced:
        ONLY AFTER aggregation — never join raw transactions with demographics.
 
 Design Decision:
-    RFM for probabilistic CLV models (BG/NBD) uses a specific definition:
-    - Recency: DAYS since last purchase (relative to analysis end)
+    RFM for probabilistic CLV models (BG/NBD, MBG/NBD) uses a specific definition:
+    - Recency: WEEKS since last purchase (relative to analysis end)
     - Frequency: number of REPEAT purchases (total purchases - 1)
     - Monetary: average net revenue PER transaction (excluding first purchase)
-    - T: customer "age" in DAYS (analysis_end_day - first purchase day)
+    - T: customer "age" in WEEKS (analysis_end_week - first purchase week)
 
-    Using DAYS (instead of weeks) gives finer granularity and avoids
-    extreme Frequency/T ratios that cause BG/NBD convergence failures.
+    Using WEEKS aligns with the BG/NBD Poisson assumption (at most 1
+    transaction per period) and keeps T/Frequency values small enough
+    for the optimizer to converge without numerical overflow.
 
     We also compute extended features (avg basket size, store diversity, etc.)
     for supervised ML approaches (XGBoost/LightGBM).
@@ -64,7 +65,7 @@ class RFMBuilder:
     def compute_rfm(
         self,
         transactions: pd.DataFrame,
-        analysis_end_day: Optional[int] = None,
+        analysis_end_week: Optional[int] = None,
     ) -> pd.DataFrame:
         """Compute RFM features aggregated by household_key.
 
@@ -78,8 +79,8 @@ class RFMBuilder:
             Transaction-level data with columns: household_key, BASKET_ID,
             DAY, WEEK_NO, SALES_VALUE, RETAIL_DISC, COUPON_DISC,
             COUPON_MATCH_DISC, QUANTITY, STORE_ID, PRODUCT_ID.
-        analysis_end_day : int, optional
-            The last DAY in the analysis window. Defaults to max DAY
+        analysis_end_week : int, optional
+            The last WEEK_NO in the analysis window. Defaults to max WEEK_NO
             in the data.
 
         Returns
@@ -88,14 +89,14 @@ class RFMBuilder:
             Household-level RFM DataFrame with one row per household_key.
             Columns: household_key, Recency, Frequency, T, Gross_Sales,
             Net_Sales, avg_basket_size, avg_transaction_value,
-            distinct_stores, tenure_days, total_baskets, coupon_usage_rate.
+            distinct_stores, tenure_weeks, total_baskets, coupon_usage_rate.
         """
         key = self.entity_key
         logger.info(f"Computing RFM features grouped by '{key}' ...")
 
-        if analysis_end_day is None:
-            analysis_end_day = int(transactions["DAY"].max())
-            logger.info(f"  → analysis_end_day auto-set to {analysis_end_day}")
+        if analysis_end_week is None:
+            analysis_end_week = int(transactions["WEEK_NO"].max())
+            logger.info(f"  → analysis_end_week auto-set to {analysis_end_week}")
 
         # ------------------------------------------------------------------
         # Step 1: Compute Net_Sales per transaction line
@@ -123,7 +124,7 @@ class RFMBuilder:
         # Step 2: Basket-level aggregation (intermediate step)
         # ------------------------------------------------------------------
         # First aggregate to basket level to compute per-basket metrics
-        # Include DAY for daily-granularity Recency/T computation
+        # Include WEEK_NO for weekly-granularity Recency/T computation
         basket_agg = (
             transactions
             .groupby([key, "BASKET_ID", "DAY", "WEEK_NO", "STORE_ID"], observed=True)
@@ -143,13 +144,10 @@ class RFMBuilder:
             basket_agg
             .groupby(key, observed=True)
             .agg(
-                # Temporal (DAY-level for Recency/T)
-                first_purchase_day=("DAY", "min"),
-                last_purchase_day=("DAY", "max"),
-
-                # Keep WEEK_NO for reference
+                # Temporal (WEEK-level for Recency/T)
                 first_purchase_week=("WEEK_NO", "min"),
                 last_purchase_week=("WEEK_NO", "max"),
+                distinct_purchase_weeks=("WEEK_NO", "nunique"),
 
                 # Frequency: total distinct baskets (shopping trips)
                 total_baskets=("BASKET_ID", "nunique"),
@@ -171,22 +169,34 @@ class RFMBuilder:
         )
 
         # ------------------------------------------------------------------
-        # Step 4: Compute derived RFM columns (DAY-based for BG/NBD)
+        # Step 4: Compute derived RFM columns (WEEK-based for MBG/NBD)
         # ------------------------------------------------------------------
-        # T = customer "age" in DAYS (from first purchase to analysis end)
-        hh_agg["T"] = analysis_end_day - hh_agg["first_purchase_day"]
+        # T = customer "age" in WEEKS (from first purchase to analysis end)
+        hh_agg["T"] = analysis_end_week - hh_agg["first_purchase_week"]
 
-        # Recency = DAYS since last purchase (relative to analysis end)
+        # Recency = WEEKS since last purchase (relative to analysis end)
         # Lower recency = more recent purchase = more active customer
-        hh_agg["Recency"] = analysis_end_day - hh_agg["last_purchase_day"]
+        hh_agg["Recency"] = analysis_end_week - hh_agg["last_purchase_week"]
 
-        # Frequency for BG/NBD: number of REPEAT purchases (total - 1)
-        # BG/NBD requires frequency ≥ 0 (customers with only 1 purchase have freq=0)
+        # Frequency for Marketing (K-Means): number of REPEAT baskets
         hh_agg["Frequency"] = hh_agg["total_baskets"] - 1
 
-        # Tenure in days
-        hh_agg["tenure_days"] = (
-            hh_agg["last_purchase_day"] - hh_agg["first_purchase_day"]
+        # --- Strict CLV Features for lifetimes (MBG/NBD & Gamma-Gamma) ---
+        # Lifetimes requires Frequency = distinct repeat periods, 
+        # Recency = periods between first and last purchase
+        hh_agg["frequency_clv"] = hh_agg["distinct_purchase_weeks"] - 1
+        hh_agg["recency_clv"] = hh_agg["last_purchase_week"] - hh_agg["first_purchase_week"]
+        
+        # Monetary for CLV: average spend per distinct week
+        hh_agg["monetary_clv"] = np.where(
+            hh_agg["frequency_clv"] > 0,
+            hh_agg["Net_Sales"] / hh_agg["distinct_purchase_weeks"],
+            0,
+        )
+
+        # Tenure in weeks
+        hh_agg["tenure_weeks"] = (
+            hh_agg["last_purchase_week"] - hh_agg["first_purchase_week"]
         )
 
         # Coupon usage rate: fraction of baskets using coupons
@@ -194,9 +204,7 @@ class RFMBuilder:
             hh_agg["baskets_with_coupon"] / hh_agg["total_baskets"]
         ).fillna(0).astype(np.float32)
 
-        # Average monetary per transaction (for Gamma-Gamma model)
-        # Gamma-Gamma requires avg monetary for REPEAT customers only
-        # For customers with frequency=0, set to 0 (they'll be excluded from GG)
+        # Average monetary per basket (for Marketing/K-Means)
         hh_agg["avg_monetary"] = np.where(
             hh_agg["Frequency"] > 0,
             hh_agg["Net_Sales"] / hh_agg["total_baskets"],
@@ -211,6 +219,9 @@ class RFMBuilder:
             "Recency",
             "Frequency",
             "T",
+            "frequency_clv",
+            "recency_clv",
+            "monetary_clv",
             "Gross_Sales",
             "Net_Sales",
             "avg_monetary",
@@ -218,7 +229,7 @@ class RFMBuilder:
             "avg_basket_size",
             "avg_transaction_value",
             "distinct_stores",
-            "tenure_days",
+            "tenure_weeks",
             "coupon_usage_rate",
             "first_purchase_week",
             "last_purchase_week",
@@ -287,7 +298,7 @@ class RFMBuilder:
         cols_to_describe = [
             "Recency", "Frequency", "T", "Gross_Sales", "Net_Sales",
             "avg_monetary", "total_baskets", "avg_basket_size",
-            "avg_transaction_value", "distinct_stores", "tenure_days",
+            "avg_transaction_value", "distinct_stores", "tenure_weeks",
             "coupon_usage_rate",
         ]
         existing = [c for c in cols_to_describe if c in rfm.columns]

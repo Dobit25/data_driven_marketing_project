@@ -1,2 +1,4 @@
 # Force CRLF line endings for all text files (Windows standard)
 * text eol=crlf
+*.png binary
+*.pbix binary

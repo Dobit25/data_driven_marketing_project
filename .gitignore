@@ -33,6 +33,9 @@ models/*
 # ----- Logs -----
 logs/*
 !logs/.gitkeep
+*.log
+stderr.log
+stdout.log
 
 # ----- Jupyter Notebooks -----
 .ipynb_checkpoints/

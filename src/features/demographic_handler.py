@@ -10,8 +10,9 @@ Constraint 4 Resolution:
     (b) KNN imputation: for ordinal demographics, using RFM features as
         the similarity metric (neighbors with similar buying behavior
         likely share demographics)
-    (c) Mode imputation: for purely categorical demographics (e.g.,
-        marital status, homeowner type)
+    (c) Random sampling imputation: for purely categorical demographics (e.g.,
+        marital status, homeowner type) — samples from the empirical distribution
+        of the 801 known households to preserve statistical diversity.
 
 Design Decision:
     The merge happens AFTER RFM aggregation (Constraint 3: Memory).
@@ -205,12 +206,17 @@ class DemographicHandler:
             df = self._impute_ordinal_knn(df, ordinal_cfg, entity_key)
 
         # ------------------------------------------------------------------
-        # Part B: Categorical imputation via Mode
+        # Part B: Categorical imputation
         # ------------------------------------------------------------------
         cat_cols = self.columns_cfg.get("categorical", [])
+        cat_method = self.imputation_cfg.get("categorical_method", "mode")
         if cat_cols:
-            logger.info("  → Imputing categorical columns with Mode ...")
-            df = self._impute_categorical_mode(df, cat_cols)
+            if cat_method == "random_sample":
+                logger.info("  -> Imputing categorical columns with Random Sampling ...")
+                df = self._impute_categorical_random_sample(df, cat_cols)
+            else:
+                logger.info("  -> Imputing categorical columns with Mode ...")
+                df = self._impute_categorical_mode(df, cat_cols)
 
         return df
 
@@ -337,5 +343,55 @@ class DemographicHandler:
                 )
             else:
                 logger.warning(f"    {col}: no mode found, leaving as NaN.")
+
+        return df
+
+    def _impute_categorical_random_sample(
+        self,
+        df: pd.DataFrame,
+        categorical_cols: List[str],
+    ) -> pd.DataFrame:
+        """Fill missing categorical demographics by random sampling from known distribution.
+
+        Instead of assigning the single most frequent value (mode) to all missing rows,
+        this method samples from the empirical frequency distribution of non-missing values.
+        This preserves statistical diversity and avoids creating zero-variance features
+        that are useless for supervised models like XGBoost/LightGBM.
+
+        Example: If real data has {U: 50%, A: 35%, B: 15%}, then imputed rows
+        will also follow approximately {U: 50%, A: 35%, B: 15%}.
+        """
+        rng = np.random.RandomState(self.imputation_cfg.get("random_seed", 42))
+
+        for col in categorical_cols:
+            if col not in df.columns:
+                logger.warning(f"    Column '{col}' not found, skipping.")
+                continue
+
+            n_missing = df[col].isna().sum()
+            if n_missing == 0:
+                continue
+
+            # Get frequency distribution from non-missing (real) values
+            known_values = df.loc[df[col].notna(), col]
+            freq_dist = known_values.value_counts(normalize=True)
+
+            if len(freq_dist) == 0:
+                logger.warning(f"    {col}: no known values, leaving as NaN.")
+                continue
+
+            # Sample from empirical distribution
+            sampled = rng.choice(
+                freq_dist.index.tolist(),
+                size=n_missing,
+                p=freq_dist.values,
+            )
+            df.loc[df[col].isna(), col] = sampled
+
+            top3 = freq_dist.head(3)
+            dist_str = ", ".join(f"{v}:{p:.0%}" for v, p in top3.items())
+            logger.info(
+                f"    {col}: sampled {n_missing} missing from distribution ({dist_str})"
+            )
 
         return df

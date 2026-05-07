@@ -134,9 +134,9 @@ class DunnhumbyDataLoader:
             "BASKET_ID": np.int64,
             "DAY": np.int16,
             "PRODUCT_ID": np.int32,
-            "QUANTITY": np.int16,
+            "QUANTITY": np.int32,
             "SALES_VALUE": np.float32,
-            "STORE_ID": np.int16,
+            "STORE_ID": np.int32,
             "RETAIL_DISC": np.float32,
             "TRANS_TIME": np.int16,
             "WEEK_NO": np.int8,
@@ -399,7 +399,7 @@ class DunnhumbyDataLoader:
         """
         dtypes = {
             "PRODUCT_ID": np.int32,
-            "STORE_ID": np.int16,
+            "STORE_ID": np.int32,
             "WEEK_NO": np.int8,
             "display": "category",
             "mailer": "category",

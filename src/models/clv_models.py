@@ -6,7 +6,7 @@ OOP module for Customer Lifetime Value segmentation and forecasting.
 Responsibilities:
     - K-Means clustering with Silhouette-based optimal K selection
     - Business-meaningful segment labeling (Champions, Loyal, At Risk, etc.)
-    - BG/NBD + Gamma-Gamma probabilistic CLV forecasting
+    - MBG/NBD + Gamma-Gamma probabilistic CLV forecasting
     - XGBoost/LightGBM supervised CLV prediction
     - Model persistence via joblib
 
@@ -30,11 +30,26 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import StandardScaler
 
+try:
+    from lifetimes import GammaGammaFitter, ModifiedBetaGeoFitter
+except ImportError:
+    pass
+
+try:
+    import xgboost as xgb
+except ImportError:
+    pass
+
+try:
+    import lightgbm as lgb
+except ImportError:
+    pass
+
 
 class CLVModeler:
     """Customer Lifetime Value modeling pipeline.
 
-    Handles segmentation (K-Means), probabilistic CLV (BG/NBD + Gamma-Gamma),
+    Handles segmentation (K-Means), probabilistic CLV (MBG/NBD + Gamma-Gamma),
     and supervised ML (XGBoost/LightGBM).
 
     Parameters
@@ -54,7 +69,7 @@ class CLVModeler:
         # Models (populated after fitting)
         self.scaler: Optional[StandardScaler] = None
         self.kmeans: Optional[KMeans] = None
-        self.bgf = None  # BetaGeoFitter
+        self.bgf = None  # ModifiedBetaGeoFitter
         self.ggf = None  # GammaGammaFitter
         self.supervised_model = None  # XGBoost or LightGBM
 
@@ -66,9 +81,12 @@ class CLVModeler:
         rfm: pd.DataFrame,
         k_range: Tuple[int, int] = (2, 9),
     ) -> pd.DataFrame:
-        """Run K-Means clustering on RFM features with Silhouette optimization.
+        """Run K-Means clustering on RFM features.
 
-        Uses ['Recency', 'Frequency', 'avg_monetary'] — consistent with
+        If config has model.kmeans.fixed_k, uses that K directly.
+        Otherwise, searches for optimal K via Silhouette Score.
+
+        Uses ['Recency', 'Frequency', 'avg_monetary'] -- consistent with
         the monetary definition used by BG/NBD and Gamma-Gamma.
 
         Parameters
@@ -91,20 +109,34 @@ class CLVModeler:
         self.scaler = StandardScaler()
         X_scaled = self.scaler.fit_transform(X)
 
-        # Find optimal K via Silhouette Score
-        best_k, best_score = k_range[0], -1
-        logger.info(f"  Searching K in range [{k_range[0]}, {k_range[1]}) ...")
+        # Check for fixed K in config
+        kmeans_cfg = self.config.get("model", {}).get("kmeans", {})
+        fixed_k = kmeans_cfg.get("fixed_k", None)
+        cfg_k_range = kmeans_cfg.get("k_range", list(k_range))
 
-        for k in range(k_range[0], k_range[1]):
-            km = KMeans(n_clusters=k, random_state=self.seed, n_init=10)
-            labels = km.fit_predict(X_scaled)
-            score = silhouette_score(X_scaled, labels)
-            logger.info(f"    K={k} → Silhouette={score:.4f}")
-            if score > best_score:
-                best_score = score
-                best_k = k
+        if fixed_k is not None:
+            best_k = int(fixed_k)
+            logger.info(f"  Using fixed K={best_k} from config")
+            # Still compute silhouette for reporting
+            km_temp = KMeans(n_clusters=best_k, random_state=self.seed, n_init=10)
+            labels_temp = km_temp.fit_predict(X_scaled)
+            sil = silhouette_score(X_scaled, labels_temp)
+            logger.info(f"  Silhouette Score (K={best_k}): {sil:.4f}")
+        else:
+            # Auto-search via Silhouette
+            best_k, best_score = cfg_k_range[0], -1
+            logger.info(f"  Searching K in range [{cfg_k_range[0]}, {cfg_k_range[1]}) ...")
 
-        logger.info(f"  ✓ Optimal K={best_k} (Silhouette={best_score:.4f})")
+            for k in range(cfg_k_range[0], cfg_k_range[1]):
+                km = KMeans(n_clusters=k, random_state=self.seed, n_init=10)
+                labels = km.fit_predict(X_scaled)
+                score = silhouette_score(X_scaled, labels)
+                logger.info(f"    K={k} -> Silhouette={score:.4f}")
+                if score > best_score:
+                    best_score = score
+                    best_k = k
+
+            logger.info(f"  -> Optimal K={best_k} (Silhouette={best_score:.4f})")
 
         # Fit final model
         self.kmeans = KMeans(n_clusters=best_k, random_state=self.seed, n_init=10)
@@ -173,31 +205,36 @@ class CLVModeler:
     # BG/NBD + Gamma-Gamma (Probabilistic CLV)
     # ------------------------------------------------------------------
     def fit_bgnbd(self, rfm: pd.DataFrame) -> pd.DataFrame:
-        """Fit BG/NBD model and predict future purchases.
+        """Fit MBG/NBD model and predict future purchases.
 
-        Includes data sanitization to handle extreme outliers that cause
-        numerical overflow in the BG/NBD log-likelihood:
+        Uses ModifiedBetaGeoFitter instead of BetaGeoFitter to avoid
+        precision-loss crashes. MBG/NBD removes the assumption that
+        customers can churn right after their first transaction,
+        which smooths the likelihood surface and dramatically
+        improves convergence on high-frequency grocery data.
+
+        Includes data sanitization to handle extreme outliers:
             1. Winsorize Frequency at 99th percentile
-            2. Progressive penalizer fallback if convergence fails
+            2. Enforce Frequency <= T constraint
+            3. Progressive penalizer fallback if convergence fails
 
         Parameters
         ----------
         rfm : pd.DataFrame
             Must contain: Frequency, Recency, T columns.
-            BG/NBD requires Frequency > 0 (repeat customers).
+            MBG/NBD requires Frequency > 0 (repeat customers).
 
         Returns
         -------
         pd.DataFrame
             Input DataFrame with 'predicted_purchases_6m' column added.
         """
-        from lifetimes import BetaGeoFitter
 
-        logger.info("Fitting BG/NBD model ...")
+        logger.info("Fitting MBG/NBD model ...")
         rfm = rfm.copy()
 
         # Filter repeat customers
-        repeat_mask = rfm["Frequency"] > 0
+        repeat_mask = rfm["frequency_clv"] > 0
         repeat_df = rfm.loc[repeat_mask].copy()
         logger.info(
             f"  Repeat customers: {len(repeat_df):,}/{len(rfm):,} "
@@ -205,13 +242,13 @@ class CLVModeler:
         )
 
         # --- Data sanitization: Winsorize Frequency at 99th percentile ---
-        freq_raw_max = repeat_df["Frequency"].max()
-        freq_p99 = int(repeat_df["Frequency"].quantile(0.99))
-        repeat_df["Frequency"] = repeat_df["Frequency"].clip(upper=freq_p99)
+        freq_raw_max = repeat_df["frequency_clv"].max()
+        freq_p99 = int(repeat_df["frequency_clv"].quantile(0.99))
+        repeat_df["frequency_clv"] = repeat_df["frequency_clv"].clip(upper=freq_p99)
 
         # --- Enforce mathematical constraint: Frequency <= T ---
         # A customer cannot make more repeat purchases than the number of periods (days)
-        repeat_df["Frequency"] = np.minimum(repeat_df["Frequency"], repeat_df["T"])
+        repeat_df["frequency_clv"] = np.minimum(repeat_df["frequency_clv"], repeat_df["T"])
 
         logger.info(
             f"  Sanitized: Frequency capped at p99={freq_p99:.0f} "
@@ -240,42 +277,42 @@ class CLVModeler:
         fitted = False
         for pen in penalizers_to_try:
             try:
-                self.bgf = BetaGeoFitter(penalizer_coef=pen)
+                self.bgf = ModifiedBetaGeoFitter(penalizer_coef=pen)
                 self.bgf.fit(
-                    repeat_df["Frequency"],
-                    repeat_df["Recency"],
+                    repeat_df["frequency_clv"],
+                    repeat_df["recency_clv"],
                     repeat_df["T"],
                 )
                 logger.info(
-                    f"  ✓ BG/NBD fitted successfully "
+                    f"  ✓ MBG/NBD fitted successfully "
                     f"(penalizer={pen})"
                 )
                 fitted = True
                 break
             except Exception as e:
                 logger.warning(
-                    f"  ✗ BG/NBD failed with penalizer={pen}: {e}"
+                    f"  ✗ MBG/NBD failed with penalizer={pen}: {e}"
                 )
 
         if not fitted:
             logger.error(
-                "  ✗ BG/NBD could not converge with any penalizer. "
+                "  ✗ MBG/NBD could not converge with any penalizer. "
                 "Setting predicted_purchases_6m = Frequency-based fallback."
             )
-            # Fallback: simple rate-based prediction (in days)
-            rate = rfm.loc[repeat_mask, "Frequency"] / rfm.loc[repeat_mask, "T"]
-            rfm.loc[repeat_mask, "predicted_purchases_6m"] = rate * 182
+            # Fallback: simple rate-based prediction (in weeks)
+            rate = rfm.loc[repeat_mask, "frequency_clv"] / rfm.loc[repeat_mask, "T"]
+            rfm.loc[repeat_mask, "predicted_purchases_6m"] = rate * 26
             rfm["predicted_purchases_6m"] = rfm["predicted_purchases_6m"].fillna(0)
             return rfm
 
-        # Predict purchases for next 182 days (6 months)
+        # Predict purchases for next 26 weeks (6 months)
         # Clip Frequency at p99 and Freq <= T for prediction consistency
-        t = 182
+        t = 26
         pred_freq = np.minimum(
-            rfm.loc[repeat_mask, "Frequency"].clip(upper=freq_p99),
+            rfm.loc[repeat_mask, "frequency_clv"].clip(upper=freq_p99),
             rfm.loc[repeat_mask, "T"]
         )
-        pred_rec = rfm.loc[repeat_mask, "Recency"]
+        pred_rec = rfm.loc[repeat_mask, "recency_clv"]
         pred_T = rfm.loc[repeat_mask, "T"]
 
         rfm.loc[repeat_mask, "predicted_purchases_6m"] = (
@@ -309,24 +346,23 @@ class CLVModeler:
         pd.DataFrame
             Input DataFrame with 'predicted_clv_6m' column added.
         """
-        from lifetimes import GammaGammaFitter
 
         logger.info("Fitting Gamma-Gamma model ...")
         rfm = rfm.copy()
 
         # Filter: Frequency > 0 AND avg_monetary > 0
-        gg_mask = (rfm["Frequency"] > 0) & (rfm["avg_monetary"] > 0)
+        gg_mask = (rfm["frequency_clv"] > 0) & (rfm["monetary_clv"] > 0)
         gg_df = rfm.loc[gg_mask].copy()
         logger.info(f"  Customers for Gamma-Gamma: {len(gg_df):,}")
 
         # Winsorize to improve convergence
-        freq_p99 = int(gg_df["Frequency"].quantile(0.99))
-        mon_p99 = gg_df["avg_monetary"].quantile(0.99)
-        gg_df["Frequency"] = gg_df["Frequency"].clip(upper=freq_p99)
-        gg_df["avg_monetary"] = gg_df["avg_monetary"].clip(upper=mon_p99)
+        freq_p99 = int(gg_df["frequency_clv"].quantile(0.99))
+        mon_p99 = gg_df["monetary_clv"].quantile(0.99)
+        gg_df["frequency_clv"] = gg_df["frequency_clv"].clip(upper=freq_p99)
+        gg_df["monetary_clv"] = gg_df["monetary_clv"].clip(upper=mon_p99)
 
         # Enforce mathematical constraint: Frequency <= T
-        gg_df["Frequency"] = np.minimum(gg_df["Frequency"], gg_df["T"])
+        gg_df["frequency_clv"] = np.minimum(gg_df["frequency_clv"], gg_df["T"])
 
         logger.info(
             f"  Sanitized: Frequency≤{freq_p99:.0f} (and Freq≤T), "
@@ -339,7 +375,7 @@ class CLVModeler:
         for pen in penalizers:
             try:
                 self.ggf = GammaGammaFitter(penalizer_coef=pen)
-                self.ggf.fit(gg_df["Frequency"], gg_df["avg_monetary"])
+                self.ggf.fit(gg_df["frequency_clv"], gg_df["monetary_clv"])
                 logger.info(f"  ✓ Gamma-Gamma fitted (penalizer={pen})")
                 gg_fitted = True
                 break
@@ -352,7 +388,7 @@ class CLVModeler:
                 "CLV fallback: avg_monetary × predicted_purchases_6m"
             )
             rfm.loc[gg_mask, "predicted_clv_6m"] = (
-                rfm.loc[gg_mask, "avg_monetary"]
+                rfm.loc[gg_mask, "monetary_clv"]
                 * rfm.loc[gg_mask, "predicted_purchases_6m"]
             )
             rfm["predicted_clv_6m"] = rfm["predicted_clv_6m"].fillna(0)
@@ -368,30 +404,30 @@ class CLVModeler:
         if bgf_valid:
             # Full CLV: BG/NBD × Gamma-Gamma with discounting
             pred_freq = np.minimum(
-                rfm.loc[gg_mask, "Frequency"].clip(upper=freq_p99),
+                rfm.loc[gg_mask, "frequency_clv"].clip(upper=freq_p99),
                 rfm.loc[gg_mask, "T"]
             )
             rfm.loc[gg_mask, "predicted_clv_6m"] = (
                 self.ggf.customer_lifetime_value(
                     self.bgf,
                     pred_freq,
-                    rfm.loc[gg_mask, "Recency"],
+                    rfm.loc[gg_mask, "recency_clv"],
                     rfm.loc[gg_mask, "T"],
-                    rfm.loc[gg_mask, "avg_monetary"].clip(upper=mon_p99),
-                    time=182,
-                    freq="D",
+                    rfm.loc[gg_mask, "monetary_clv"].clip(upper=mon_p99),
+                    time=26,
+                    freq="W",
                     discount_rate=0.01,
                 )
             )
-            logger.info("  CLV via BG/NBD × Gamma-Gamma (full model)")
+            logger.info("  CLV via MBG/NBD × Gamma-Gamma (full model)")
         else:
-            # BG/NBD failed → E[monetary] × predicted_purchases
+            # MBG/NBD failed → E[monetary] × predicted_purchases
             logger.warning(
-                "  BG/NBD not fitted → "
+                "  MBG/NBD not fitted → "
                 "CLV = E[monetary] × predicted_purchases_6m"
             )
             expected_m = self.ggf.conditional_expected_average_profit(
-                gg_df["Frequency"], gg_df["avg_monetary"]
+                gg_df["frequency_clv"], gg_df["monetary_clv"]
             )
             rfm.loc[gg_mask, "predicted_clv_6m"] = (
                 expected_m * rfm.loc[gg_mask, "predicted_purchases_6m"]
@@ -475,7 +511,6 @@ class CLVModeler:
         y_train, y_val = y.iloc[:split_idx], y.iloc[split_idx:]
 
         if active_model == "xgboost":
-            import xgboost as xgb
 
             params = self.config["model"]["xgboost"]
             self.supervised_model = xgb.XGBRegressor(
@@ -494,7 +529,6 @@ class CLVModeler:
             )
 
         elif active_model == "lightgbm":
-            import lightgbm as lgb
 
             params = self.config["model"]["lightgbm"]
             self.supervised_model = lgb.LGBMRegressor(
@@ -538,7 +572,19 @@ class CLVModeler:
 
         if self.bgf is not None:
             path = self.model_dir / "bgnbd_model.pkl"
-            joblib.dump(self.bgf, path)
+            # ModifiedBetaGeoFitter stores an internal lambda after fit()
+            # that pickle/joblib cannot serialize. Save params instead.
+            try:
+                joblib.dump(self.bgf, path)
+            except Exception:
+                bgf_data = {
+                    "params_": self.bgf.params_ if hasattr(self.bgf, "params_") else {},
+                    "summary": self.bgf.summary.to_dict() if hasattr(self.bgf, "summary") else {},
+                    "penalizer_coef": self.bgf.penalizer_coef,
+                    "model_type": "ModifiedBetaGeoFitter",
+                }
+                joblib.dump(bgf_data, path)
+                logger.info(f"  (saved as params dict due to pickle limitation)")
             logger.info(f"  Saved: {path}")
 
         if self.ggf is not None:
@@ -563,7 +609,11 @@ class CLVModeler:
         rfm_holdout: Optional[pd.DataFrame] = None,
         full_features: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
-        """Execute the full modeling pipeline.
+        """Execute the full 3-tier modeling pipeline.
+
+        Tier 1 (Baseline):  Rate-based CLV  -> predicted_clv_baseline
+        Tier 2 (ML):        XGBoost/LightGBM -> predicted_clv_supervised
+        Tier 3 (Reference): MBG/NBD x GG    -> predicted_clv_6m
 
         Parameters
         ----------
@@ -582,13 +632,26 @@ class CLVModeler:
         # Step 1: K-Means segmentation
         result = self.segment_customers(rfm_calibration)
 
-        # Step 2: BG/NBD
+        # Step 2: MBG/NBD
         result = self.fit_bgnbd(result)
 
-        # Step 3: Gamma-Gamma
+        # Step 3: Gamma-Gamma (Tier 3: Reference)
         result = self.fit_gamma_gamma(result)
 
-        # Step 4: Supervised ML (if configured and data available)
+        # Step 3b: Tier 1 Baseline -- always compute rate-based CLV
+        repeat_mask = result["frequency_clv"] > 0
+        rate = result.loc[repeat_mask, "frequency_clv"] / result.loc[repeat_mask, "T"]
+        result["predicted_clv_baseline"] = 0.0
+        result.loc[repeat_mask, "predicted_clv_baseline"] = (
+            result.loc[repeat_mask, "monetary_clv"] * rate * 26
+        )
+        logger.info(
+            f"  Tier 1 Baseline CLV: "
+            f"mean=${result['predicted_clv_baseline'].mean():,.2f}, "
+            f"median=${result['predicted_clv_baseline'].median():,.2f}"
+        )
+
+        # Step 4: Supervised ML (Tier 2: if configured and data available)
         if full_features is not None and rfm_holdout is not None:
             full_features = self.fit_supervised(full_features, rfm_holdout)
             # Merge supervised predictions back
