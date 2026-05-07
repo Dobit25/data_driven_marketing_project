@@ -2,7 +2,7 @@
 
 **Dự án**: Customer Lifetime Value Prediction  
 **Team**: DSEB65A — Group 6  
-**Ngày cập nhật**: 2026-05-04  
+**Ngày cập nhật**: 2026-05-07  
 
 ---
 
@@ -38,12 +38,13 @@ data_driven_marketing_project/
 │
 ├── models/                            # 🧠 Serialized models (joblib)
 │   ├── kmeans_model.pkl               #    K-Means + StandardScaler
-│   ├── bgnbd_model.pkl                #    BG/NBD probabilistic model
-│   ├── gg_model.pkl                   #    Gamma-Gamma monetary model
-│   └── xgboost_model.pkl             #    (optional) XGBoost regressor
+│   ├── bgnbd_model.pkl                #    BG/NBD probabilistic model (Tier 3)
+│   ├── gg_model.pkl                   #    Gamma-Gamma monetary model (Tier 3)
+│   └── xgboost_model.pkl             #    XGBoost regressor (Tier 2 — primary model)
 │
 ├── notebooks/                         # 📓 Jupyter Notebooks (Exploration)
 │   ├── eda_notebook.ipynb             #    EDA đầy đủ: phân phối, cohort, MBA (có outputs)
+│   ├── tung.py                        #    K=4 segmentation analysis & visualization (6 charts)
 │   └── rfm_clv_model.ipynb            #    Notebook modeling (stub, cần hoàn thiện)
 │
 ├── reports/                           # 📊 Báo cáo & kết quả
@@ -107,7 +108,7 @@ data_driven_marketing_project/
 | Method | Chức năng |
 |--------|-----------|
 | `__init__(config)` | Khởi tạo, validate paths từ config.yaml |
-| `load_transactions()` | Load 2.5M dòng giao dịch với dtype downcasting (int64→int32, float64→float32) |
+| `load_transactions()` | Load 2.5M dòng giao dịch với dtype downcasting (QUANTITY/STORE_ID: int32, float64→float32) |
 | `load_demographics()` | Load thông tin nhân khẩu 801/2500 hộ |
 | `load_products()` | Load catalog sản phẩm (DEPARTMENT, BRAND, COMMODITY) |
 | `load_causal_data()` | Load 695MB causal data (hỗ trợ chunked reading) |
@@ -127,25 +128,32 @@ data_driven_marketing_project/
 2. **Monetary Calculation**: Tính cả Gross_Sales và Net_Sales
 3. **Memory Optimization**: Aggregate trước, merge demographics sau
 
-| Output Column | Ý nghĩa |
-|---------------|---------|
-| `Recency` | Số tuần từ lần mua cuối → analysis_end (thấp = tốt) |
-| `Frequency` | Số lần mua lặp lại = total_baskets - 1 (BG/NBD convention) |
-| `T` | Tuổi khách hàng tính theo tuần |
-| `avg_monetary` | Giá trị trung bình mỗi giao dịch (cho Gamma-Gamma) |
-| `Gross_Sales` | Tổng doanh thu trước discount |
-| `Net_Sales` | Tổng doanh thu sau discount |
-| `coupon_usage_rate` | Tỷ lệ giỏ hàng dùng coupon |
-| `distinct_stores` | Số cửa hàng khác nhau đã ghé |
+**Hai bộ features song song:**
+
+| Output Column | Ý nghĩa | Dùng cho |
+|---|---|---|
+| `Recency` | Số tuần từ lần mua cuối → analysis_end (thấp = tốt) | K-Means |
+| `Frequency` | Số lần mua lặp lại = total_baskets - 1 | K-Means |
+| `avg_monetary` | Net_Sales / total_baskets ($/giỏ hàng) | K-Means |
+| `frequency_clv` | Số **tuần** mua sắm lặp lại = distinct_purchase_weeks - 1 | MBG/NBD, Gamma-Gamma |
+| `recency_clv` | Tuần từ lần mua đầu đến lần mua cuối | MBG/NBD |
+| `monetary_clv` | Net_Sales / distinct_purchase_weeks ($/tuần mua) | Gamma-Gamma |
+| `T` | Tuổi khách hàng tính theo tuần | MBG/NBD |
+| `Gross_Sales` | Tổng doanh thu trước discount | EDA |
+| `Net_Sales` | Tổng doanh thu sau discount | Target holdout |
+| `coupon_usage_rate` | Tỷ lệ giỏ hàng dùng coupon | XGBoost feature |
+| `distinct_stores` | Số cửa hàng khác nhau đã ghé | XGBoost feature |
+
+> **Lưu ý**: `Frequency`/`avg_monetary` đếm theo **basket** (giỏ hàng). `frequency_clv`/`monetary_clv` đếm theo **tuần** (đơn vị thời gian Poisson cho Lifetimes).
 
 ---
 
 ### 2.3 `src/features/demographic_handler.py` — DemographicHandler
 
-**Chiến lược xử lý missing**: `flag_and_impute`
+**Chiến lược xử lý missing**: `flag_and_impute` (68% hộ thiếu dữ liệu)
 - Tạo cờ nhị phân `has_demographics` (0/1)
-- KNN imputation (k=5) cho biến ordinal (AGE_DESC, INCOME_DESC, HOUSEHOLD_SIZE_DESC)
-- Mode imputation cho biến categorical (MARITAL_STATUS_CODE, HOMEOWNER_DESC)
+- **KNN imputation** (k=5) cho biến ordinal (AGE_DESC, INCOME_DESC, HOUSEHOLD_SIZE_DESC, KID_CATEGORY_DESC)
+- **Random Sampling** từ phân phối thực cho biến categorical (MARITAL_STATUS_CODE, HOMEOWNER_DESC, HH_COMP_DESC) — giữ đa dạng thống kê thay vì gán cùng 1 giá trị mode
 
 ---
 
@@ -179,17 +187,24 @@ Trích xuất features từ `causal_data.csv` (695MB) bằng chunked processing:
 
 ---
 
-### 2.7 `src/models/clv_models.py` — CLVModeler
+### 2.7 `src/models/clv_models.py` — CLVModeler (3-Tier Architecture)
+
+**Kiến trúc 3 tầng:**
+```
+Tier 1 (Baseline):  Rate-based Fallback     → predicted_clv_baseline
+Tier 2 (Primary):   XGBoost / LightGBM      → predicted_clv_supervised
+Tier 3 (Reference): MBG/NBD × Gamma-Gamma   → predicted_clv_6m
+```
 
 | Method | Chức năng |
 |--------|-----------|
-| `segment_customers()` | K-Means clustering trên [Recency, Frequency, avg_monetary] |
-| `_assign_segment_labels()` | Map cluster ID → business labels (Champions, Loyal, At Risk...) |
-| `fit_bgnbd()` | Fit BG/NBD → dự báo số lần mua 6 tháng tới |
-| `fit_gamma_gamma()` | Fit Gamma-Gamma → dự báo giá trị mỗi giao dịch → CLV |
-| `fit_supervised()` | XGBoost/LightGBM dùng RFM + demographics + promo features |
+| `segment_customers()` | K-Means clustering (K=4 fixed hoặc auto Silhouette search) |
+| `_assign_segment_labels()` | Map cluster ID → business labels (Champions, Loyal, Promising, Needs Attention) |
+| `fit_bgnbd()` | Fit MBG/NBD → dự báo số lần mua 6 tháng tới |
+| `fit_gamma_gamma()` | Fit Gamma-Gamma → predicted_clv_6m (Tier 3) |
+| `fit_supervised()` | XGBoost/LightGBM → predicted_clv_supervised (Tier 2) |
 | `save_models()` | Lưu tất cả models qua joblib (.pkl) |
-| `run_all()` | Chạy toàn bộ pipeline modeling |
+| `run_all()` | Chạy 3-tier pipeline: K-Means → BG/NBD → GG → Baseline → XGBoost |
 
 ---
 
@@ -280,11 +295,11 @@ flowchart TD
         S3["Step 3: Temporal Split<br/>(TimeSplitter: Cal wk1-75 | Hold wk76-102)"]
         S4["Step 4: RFM Calibration<br/>(RFMBuilder)"]
         S5["Step 5: RFM Holdout<br/>(RFMBuilder)"]
-        S6["Step 6: Demographics<br/>(DemographicHandler: KNN+Mode)"]
+        S6["Step 6: Demographics<br/>(DemographicHandler: KNN+RandomSample)"]
         S7["Step 7: EDA Charts<br/>(EDAPlotter: 10 charts)"]
         S8["Step 8: Promo Features<br/>(CausalFeatureBuilder: causal_data)"]
-        S9["Step 9: CLV Modeling<br/>(CLVModeler: K-Means + BG/NBD + GG)"]
-        S10["Step 10: Evaluation<br/>(CLVEvaluator: MAE/RMSE/MAPE)"]
+        S9["Step 9: CLV Modeling<br/>(3-Tier: K-Means + BG/NBD + GG + Baseline + XGBoost)"]
+        S10["Step 10: 3-Tier Evaluation<br/>(CLVEvaluator: MAE/RMSE/MAPE x3 tiers)"]
         S11["Step 11: MBA<br/>(MBABuilder: Apriori rules)"]
         S12["Step 12: Summary<br/>(Log results)"]
 
@@ -351,7 +366,7 @@ data/raw/
 python -m src.pipeline.run_preprocessing configs/config.yaml
 ```
 
-**Thời gian dự kiến**: 5-15 phút (tùy RAM và CPU), phần lớn thời gian dành cho `causal_data.csv` (Step 8) và K-Means (Step 9).
+**Thời gian dự kiến**: ~2-3 phút (tùy RAM và CPU), phần lớn thời gian dành cho `causal_data.csv` (Step 8).
 
 ### 5.4 Chạy unit tests
 
@@ -373,13 +388,14 @@ Sau khi pipeline chạy thành công, verify các file sau:
 | `data/interim/rfm_holdout.csv` | RFM features kỳ test | Step 5 |
 | `data/processed/clv_features_calibration.csv` | Features đầy đủ (RFM + Demo + Promo) | Step 6, 8 |
 | `data/processed/clv_features_holdout.csv` | Features holdout | Step 6 |
-| `data/processed/customer_labels.csv` | Cluster + Segment labels | Step 9 |
-| `data/processed/rfm_clv_final.csv` | CLV predictions tổng hợp | Step 9 |
+| `data/processed/customer_labels.csv` | Cluster (K=4) + Segment labels | Step 9 |
+| `data/processed/rfm_clv_final.csv` | CLV predictions 3 tầng + segments | Step 9 |
 | `models/kmeans_model.pkl` | K-Means + Scaler | Step 9 |
-| `models/bgnbd_model.pkl` | BG/NBD model | Step 9 |
-| `models/gg_model.pkl` | Gamma-Gamma model | Step 9 |
-| `reports/evaluation_report.txt` | MAE, RMSE, MAPE | Step 10 |
-| `reports/figures/calibration_plot.png` | Predicted vs Actual scatter | Step 10 |
+| `models/bgnbd_model.pkl` | MBG/NBD model (Tier 3) | Step 9 |
+| `models/gg_model.pkl` | Gamma-Gamma model (Tier 3) | Step 9 |
+| `models/xgboost_model.pkl` | XGBoost regressor (Tier 2 — primary) | Step 9 |
+| `reports/evaluation_report.txt` | MAE, RMSE, MAPE cho cả 3 tiers | Step 10 |
+| `reports/figures/calibration_plot.png` | Predicted vs Actual scatter (XGBoost) | Step 10 |
 | `reports/figures/*.png` | 10 EDA charts | Step 7 |
 | `reports/market_basket_rules.csv` | Association rules | Step 11 |
 | `logs/pipeline.log` | Full pipeline log | All steps |
@@ -393,15 +409,25 @@ Mọi tham số đều nằm trong `configs/config.yaml`:
 splitting:
   calibration_end_week: 75     # Tăng lên 80 để có ít holdout hơn
 
-# Chuyển sang XGBoost thay vì BG/NBD
+# Model chính (default: xgboost)
 model:
   active: "xgboost"            # "bgnbd_gg" | "xgboost" | "lightgbm"
+
+  # K-Means segmentation
+  kmeans:
+    fixed_k: 4                 # Ép K=4 (set null để auto Silhouette search)
+    k_range: [2, 9]            # Phạm vi tìm kiếm nếu fixed_k = null
 
 # Điều chỉnh hyperparameters
   xgboost:
     n_estimators: 500
     max_depth: 6
     learning_rate: 0.05
+
+# Chiến lược imputation cho demographics
+demographics:
+  imputation:
+    categorical_method: "random_sample"  # "mode" | "random_sample"
 ```
 
 ---
