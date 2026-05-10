@@ -112,7 +112,7 @@ model:
   # K-Means segmentation
   kmeans:
     # Fixed K for marketing segmentation (set to null for auto Silhouette search)
-    fixed_k: 4
+    fixed_k: null
     k_range: [2, 9]
 
   bgnbd_gg:

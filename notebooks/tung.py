@@ -70,7 +70,7 @@ for c in sorted_clusters:
 summary_cols = [
     "Recency", "Frequency", "avg_monetary", "Net_Sales",
     "total_baskets", "tenure_weeks", "coupon_usage_rate",
-    "T", "distinct_stores",
+    "retail_disc_usage_rate", "T", "distinct_stores",
 ]
 
 summary = rfm.groupby("Segment")[summary_cols].agg(["mean", "median", "std", "min", "max"])
@@ -120,7 +120,7 @@ axes[1].tick_params(axis="x", rotation=15)
 
 plt.tight_layout()
 plt.savefig("reports/figures/k4_segment_sizes.png", dpi=150, bbox_inches="tight")
-plt.show()
+
 
 # %% [markdown]
 # ## 3. So sánh RFM trung bình giữa 4 Segment (Radar Chart)
@@ -156,7 +156,7 @@ ax.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1), fontsize=10)
 
 plt.tight_layout()
 plt.savefig("reports/figures/k4_radar_chart.png", dpi=150, bbox_inches="tight")
-plt.show()
+
 
 # %% [markdown]
 # ## 4. Boxplot so sánh phân phối từng chỉ số RFM
@@ -192,7 +192,7 @@ for ax, col, title in zip(axes.ravel(), box_cols, box_titles):
 plt.suptitle("Phân phối chỉ số RFM theo 4 Segment", fontsize=15, fontweight="bold", y=1.02)
 plt.tight_layout()
 plt.savefig("reports/figures/k4_boxplots.png", dpi=150, bbox_inches="tight")
-plt.show()
+
 
 # %% [markdown]
 # ## 5. Heatmap — Giá trị trung bình chuẩn hóa theo Segment
@@ -200,35 +200,43 @@ plt.show()
 # %% Heatmap
 heatmap_cols = [
     "Recency", "Frequency", "avg_monetary", "Net_Sales",
-    "total_baskets", "tenure_weeks", "coupon_usage_rate", "distinct_stores",
+    "total_baskets", "tenure_weeks", "coupon_usage_rate",
+    "retail_disc_usage_rate", "distinct_stores",
 ]
 hm_data = rfm.groupby("Segment")[heatmap_cols].mean().loc[segment_order]
 
-# Z-score normalize across segments (row-wise comparison)
-hm_norm = (hm_data - hm_data.mean()) / (hm_data.std() + 1e-9)
+# TÍNH Z-SCORE CHUẨN: Dựa trên trung bình và độ lệch chuẩn của TOÀN BỘ tập khách hàng (Population)
+# Cách cũ (tính z-score trên 4 dòng mean) là sai về mặt thống kê vì không xét đến trọng số khách hàng.
+pop_mean = rfm[heatmap_cols].mean()
+pop_std = rfm[heatmap_cols].std() + 1e-9
+
+hm_norm = (hm_data - pop_mean) / pop_std
+
+# Đảo ngược Recency: Recency thấp (âm z-score) = Tốt (xanh) -> Đổi dấu để đồng nhất màu
+hm_norm["Recency"] = -hm_norm["Recency"]
 
 fig, ax = plt.subplots(figsize=(12, 4))
 sns.heatmap(
     hm_norm,
     annot=hm_data.round(1).values,  # show raw values
     fmt="",
-    cmap="RdYlGn_r",
+    cmap="RdYlGn",  # Normal RdYlGn (Green = High Z-score = Good)
     center=0,
     linewidths=1,
     linecolor="white",
     ax=ax,
     yticklabels=segment_order,
-    cbar_kws={"label": "Z-score (cao = nổi bật)"},
+    cbar_kws={"label": "Chỉ số kinh doanh (Xanh = Tốt, Đỏ = Kém)"},
 )
 ax.set_title(
-    "Heatmap chỉ số trung bình theo Segment\n(Màu = Z-score, Số = giá trị thực)",
+    "Heatmap đánh giá mức độ Tốt/Kém của từng Segment\n(Màu = Độ tốt, Số = Giá trị thực)",
     fontsize=13, fontweight="bold",
 )
 ax.tick_params(axis="x", rotation=30)
 
 plt.tight_layout()
 plt.savefig("reports/figures/k4_heatmap.png", dpi=150, bbox_inches="tight")
-plt.show()
+
 
 # %% [markdown]
 # ## 6. Scatter Plot — Frequency vs Monetary (màu theo Segment)
@@ -252,7 +260,7 @@ ax.yaxis.set_major_formatter(mticker.StrMethodFormatter("${x:,.0f}"))
 
 plt.tight_layout()
 plt.savefig("reports/figures/k4_scatter_freq_monetary.png", dpi=150, bbox_inches="tight")
-plt.show()
+
 
 # %% [markdown]
 # ## 7. Silhouette Plot — Chất lượng phân cụm từng điểm
@@ -288,7 +296,7 @@ ax.set_yticks([])
 
 plt.tight_layout()
 plt.savefig("reports/figures/k4_silhouette_plot.png", dpi=150, bbox_inches="tight")
-plt.show()
+
 
 # %% [markdown]
 # ## 8. Bảng tổng kết chiến lược Marketing

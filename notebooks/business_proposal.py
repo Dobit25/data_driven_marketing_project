@@ -25,42 +25,12 @@ FIGS.mkdir(parents=True, exist_ok=True)
 SEG_COLORS = {"Champions":"#2ecc71","Loyal Customers":"#3498db","Promising":"#f39c12","Needs Attention":"#e74c3c"}
 SEG_ORDER = list(SEG_COLORS.keys())
 
-# %% Load & Build RFM
+# %% Load Data
 print("=" * 60)
-print("  STEP 1: Load data & Build RFM")
+print("  STEP 1: Load pre-processed RFM data")
 print("=" * 60)
 
-txn = pd.read_csv(PROJECT / "data/raw/transaction_data.csv",
-    dtype={"household_key":np.int32,"BASKET_ID":np.int64,"DAY":np.int16,
-           "PRODUCT_ID":np.int32,"QUANTITY":np.int32,"SALES_VALUE":np.float32,
-           "STORE_ID":np.int32,"RETAIL_DISC":np.float32,"TRANS_TIME":np.int16,
-           "WEEK_NO":np.int8,"COUPON_DISC":np.float32,"COUPON_MATCH_DISC":np.float32})
-print(f"  Loaded {len(txn):,} transactions")
-
-# Calibration only (weeks 1-75)
-cal = txn[txn["WEEK_NO"] <= 75].copy()
-END_WEEK = 75
-
-cal["_net"] = cal["SALES_VALUE"] + cal["RETAIL_DISC"] + cal["COUPON_DISC"] + cal["COUPON_MATCH_DISC"]
-cal["_coupon"] = ((cal["COUPON_DISC"]<0)|(cal["COUPON_MATCH_DISC"]<0)).astype(np.int8)
-
-basket = cal.groupby(["household_key","BASKET_ID","WEEK_NO","STORE_ID"], observed=True).agg(
-    bg=("SALES_VALUE","sum"), bn=("_net","sum"), bi=("QUANTITY","sum"), bc=("_coupon","max")
-).reset_index()
-
-rfm = basket.groupby("household_key", observed=True).agg(
-    first_wk=("WEEK_NO","min"), last_wk=("WEEK_NO","max"),
-    total_baskets=("BASKET_ID","nunique"), Gross_Sales=("bg","sum"),
-    Net_Sales=("bn","sum"), avg_basket_size=("bi","mean"),
-    distinct_stores=("STORE_ID","nunique"), coupon_baskets=("bc","sum")
-).reset_index()
-
-rfm["Recency"] = END_WEEK - rfm["last_wk"]
-rfm["Frequency"] = rfm["total_baskets"] - 1
-rfm["T"] = END_WEEK - rfm["first_wk"]
-rfm["avg_monetary"] = np.where(rfm["Frequency"]>0, rfm["Net_Sales"]/rfm["total_baskets"], 0)
-rfm["tenure_weeks"] = rfm["last_wk"] - rfm["first_wk"]
-rfm["coupon_usage_rate"] = (rfm["coupon_baskets"]/rfm["total_baskets"]).fillna(0)
+rfm = pd.read_csv(PROJECT / "data/interim/rfm_calibration.csv")
 print(f"  RFM table: {len(rfm):,} households")
 
 # %% K-Means K=4
@@ -103,6 +73,7 @@ rev = rfm.groupby("Segment").agg(
     avg_basket=("avg_basket_size","mean"),
     avg_stores=("distinct_stores","mean"),
     avg_coupon=("coupon_usage_rate","mean"),
+    avg_retail_disc=("retail_disc_usage_rate","mean"),
 ).loc[SEG_ORDER]
 
 rev["revenue_pct"] = rev["total_revenue"] / rev["total_revenue"].sum() * 100
@@ -119,21 +90,21 @@ for seg in SEG_ORDER:
 
 # %% Chart 1: Segment Size vs Revenue Contribution
 fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-fig.suptitle("Phân bố Khách hàng vs Đóng góp Doanh thu theo Segment", fontsize=14, fontweight="bold")
+fig.suptitle("Customer Distribution vs Revenue Contribution by Segment", fontsize=14, fontweight="bold")
 
 x = np.arange(4)
 w = 0.35
 colors = [SEG_COLORS[s] for s in SEG_ORDER]
-axes[0].bar(x-w/2, rev["customer_pct"], w, color=colors, alpha=0.7, label="% Khách hàng", edgecolor="white")
-axes[0].bar(x+w/2, rev["revenue_pct"], w, color=colors, alpha=1.0, label="% Doanh thu", edgecolor="white")
+axes[0].bar(x-w/2, rev["customer_pct"], w, color=colors, alpha=0.7, label="% Customers", edgecolor="white")
+axes[0].bar(x+w/2, rev["revenue_pct"], w, color=colors, alpha=1.0, label="% Revenue", edgecolor="white")
 axes[0].set_xticks(x); axes[0].set_xticklabels(SEG_ORDER, rotation=15, fontsize=9)
-axes[0].set_ylabel("%"); axes[0].legend(); axes[0].set_title("% Khách hàng vs % Doanh thu")
+axes[0].set_ylabel("%"); axes[0].legend(); axes[0].set_title("% Customers vs % Revenue")
 for i in range(4):
     axes[0].text(x[i]-w/2, rev["customer_pct"].iloc[i]+0.5, f'{rev["customer_pct"].iloc[i]:.1f}%', ha="center", fontsize=8)
     axes[0].text(x[i]+w/2, rev["revenue_pct"].iloc[i]+0.5, f'{rev["revenue_pct"].iloc[i]:.1f}%', ha="center", fontsize=8, fontweight="bold")
 
 axes[1].bar(SEG_ORDER, rev["avg_revenue"], color=colors, edgecolor="white")
-axes[1].set_title("Doanh thu trung bình / Khách hàng ($)")
+axes[1].set_title("Average Revenue / Customer ($)")
 axes[1].yaxis.set_major_formatter(mticker.StrMethodFormatter("${x:,.0f}"))
 for i, v in enumerate(rev["avg_revenue"]):
     axes[1].text(i, v+20, f"${v:,.0f}", ha="center", fontsize=9, fontweight="bold")
@@ -146,8 +117,8 @@ print("  Saved: 01_segment_vs_revenue.png")
 
 # %% Chart 2: Radar Chart
 from math import pi
-radar_cols = ["Recency","Frequency","avg_monetary","Net_Sales","coupon_usage_rate","distinct_stores"]
-radar_labels = ["Recency\n(thấp=tốt)","Frequency","Avg Monetary","Net Sales","Coupon Rate","Stores"]
+radar_cols = ["Recency","Frequency","avg_monetary","Net_Sales","coupon_usage_rate","retail_disc_usage_rate","distinct_stores"]
+radar_labels = ["Recency\n(Lower=Better)","Frequency","Avg Monetary","Net Sales","Coupon Rate","Retail Disc Rate","Stores"]
 rd = rfm.groupby("Segment")[radar_cols].mean().loc[SEG_ORDER]
 rn = (rd - rd.min()) / (rd.max() - rd.min() + 1e-9)
 rn["Recency"] = 1 - rn["Recency"]
@@ -161,7 +132,7 @@ for seg in SEG_ORDER:
     ax.plot(angles, vals, "o-", lw=2, label=seg, color=SEG_COLORS[seg])
     ax.fill(angles, vals, alpha=0.1, color=SEG_COLORS[seg])
 ax.set_xticks(angles[:-1]); ax.set_xticklabels(radar_labels, fontsize=10)
-ax.set_ylim(0,1.1); ax.set_title("RFM Profile theo Segment", fontsize=14, fontweight="bold", pad=20)
+ax.set_ylim(0,1.1); ax.set_title("RFM Profile by Segment", fontsize=14, fontweight="bold", pad=20)
 ax.legend(loc="upper right", bbox_to_anchor=(1.35,1.1))
 plt.tight_layout()
 plt.savefig(FIGS / "02_radar_rfm.png", dpi=150, bbox_inches="tight")
@@ -173,17 +144,17 @@ champ = rfm[rfm["Segment"]=="Champions"]
 others = rfm[rfm["Segment"]!="Champions"]
 
 fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-fig.suptitle(f"CHAMPIONS DEEP-DIVE ({len(champ):,} KH — {len(champ)/len(rfm)*100:.1f}%)", fontsize=15, fontweight="bold", color="#2ecc71")
+fig.suptitle(f"CHAMPIONS DEEP-DIVE ({len(champ):,} Customers — {len(champ)/len(rfm)*100:.1f}%)", fontsize=15, fontweight="bold", color="#2ecc71")
 
 # Net Sales distribution
 axes[0,0].hist(champ["Net_Sales"].clip(upper=champ["Net_Sales"].quantile(0.99)), bins=40, color="#2ecc71", alpha=0.8, edgecolor="white", label="Champions")
 axes[0,0].hist(others["Net_Sales"].clip(upper=others["Net_Sales"].quantile(0.99)), bins=40, color="#bdc3c7", alpha=0.5, edgecolor="white", label="Others")
-axes[0,0].set_title("Phân phối Net Sales"); axes[0,0].set_xlabel("$"); axes[0,0].legend()
+axes[0,0].set_title("Net Sales Distribution"); axes[0,0].set_xlabel("$"); axes[0,0].legend()
 
 # Frequency
 axes[0,1].hist(champ["Frequency"], bins=40, color="#2ecc71", alpha=0.8, edgecolor="white", label="Champions")
 axes[0,1].hist(others["Frequency"], bins=40, color="#bdc3c7", alpha=0.5, edgecolor="white", label="Others")
-axes[0,1].set_title("Phân phối Frequency"); axes[0,1].legend()
+axes[0,1].set_title("Frequency Distribution"); axes[0,1].legend()
 
 # Avg monetary
 axes[1,0].hist(champ["avg_monetary"], bins=40, color="#2ecc71", alpha=0.8, edgecolor="white", label="Champions")
@@ -216,8 +187,8 @@ bars = ax.barh(opp["Segment"], opp["Potential"], color=[SEG_COLORS[s] for s in o
 for bar, pot, rate in zip(bars, opp["Potential"], opp["Upgrade_rate"]):
     ax.text(bar.get_width()+1000, bar.get_y()+bar.get_height()/2, f"${pot:,.0f} (upgrade {rate:.0%})", va="center", fontsize=11, fontweight="bold")
 
-ax.set_xlabel("Doanh thu tiềm năng ($)")
-ax.set_title("CƠ HỘI TĂNG DOANH THU — Nâng cấp khách hàng lên Champions", fontsize=14, fontweight="bold")
+ax.set_xlabel("Potential Revenue ($)")
+ax.set_title("REVENUE OPPORTUNITY — Upgrading Customers to Champions", fontsize=14, fontweight="bold")
 ax.xaxis.set_major_formatter(mticker.StrMethodFormatter("${x:,.0f}"))
 plt.tight_layout()
 plt.savefig(FIGS / "04_revenue_opportunity.png", dpi=150, bbox_inches="tight")
@@ -225,18 +196,35 @@ plt.close(fig)
 print("  Saved: 04_revenue_opportunity.png")
 
 # %% Chart 5: Strategy Priority Matrix
+from matplotlib.lines import Line2D
 fig, ax = plt.subplots(figsize=(10, 8))
 for seg in SEG_ORDER:
     r = rev.loc[seg]
-    ax.scatter(r["avg_revenue"], r["avg_frequency"], s=r["n_customers"]*0.8,
+    s_size = r["n_customers"] * 0.8
+    ax.scatter(r["avg_revenue"], r["avg_frequency"], s=s_size,
                c=SEG_COLORS[seg], alpha=0.7, edgecolors="black", linewidth=1.5, label=seg, zorder=5)
-    ax.annotate(f"{seg}\n({r['n_customers']:,.0f} KH)", (r["avg_revenue"], r["avg_frequency"]),
-                fontsize=9, ha="center", va="bottom", fontweight="bold")
+    # Fix Text Overlapping
+    ax.annotate(f"{seg}\n({r['n_customers']:,.0f} Cust)", 
+                (r["avg_revenue"], r["avg_frequency"]),
+                xytext=(0, np.sqrt(s_size)/2 + 10), # Offset dynamically based on bubble radius
+                textcoords="offset points",
+                fontsize=10, ha="center", va="bottom", fontweight="bold",
+                bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.85),
+                zorder=10)
 
-ax.set_xlabel("Doanh thu trung bình / KH ($)", fontsize=12)
-ax.set_ylabel("Tần suất mua trung bình", fontsize=12)
-ax.set_title("MA TRẬN ƯU TIÊN CHIẾN LƯỢC\n(Kích thước = Số lượng KH)", fontsize=14, fontweight="bold")
-ax.legend(loc="upper left")
+ax.set_xlabel("Average Revenue / Customer ($)", fontsize=12)
+ax.set_ylabel("Average Purchase Frequency", fontsize=12)
+ax.set_title("STRATEGIC PRIORITY MATRIX\n(Bubble Size = Number of Customers)", fontsize=14, fontweight="bold")
+
+# Fix Legend Overlap (fixed marker size for all items in legend)
+legend_elements = [Line2D([0], [0], marker='o', color='w', label=seg,
+                          markerfacecolor=SEG_COLORS[seg], markersize=12, markeredgecolor='black', alpha=0.7)
+                   for seg in SEG_ORDER]
+ax.legend(handles=legend_elements, loc="upper left", title="Segments")
+
+# Fix Clipping (add margin to axes limits)
+ax.margins(0.15)
+
 ax.xaxis.set_major_formatter(mticker.StrMethodFormatter("${x:,.0f}"))
 plt.tight_layout()
 plt.savefig(FIGS / "05_strategy_matrix.png", dpi=150, bbox_inches="tight")
@@ -322,6 +310,7 @@ for seg in SEG_ORDER:
         "Frequency TB": f"{r['avg_frequency']:.0f}",
         "Recency TB": f"{r['avg_recency']:.1f}",
         "Monetary TB": f"${r['avg_monetary']:,.1f}",
+        "Retail Disc %": f"{r['avg_retail_disc']*100:.1f}%",
     })
 pd.DataFrame(summary_data).to_csv(FIGS / "segment_summary.csv", index=False, encoding="utf-8-sig")
 print("  Saved: segment_summary.csv")

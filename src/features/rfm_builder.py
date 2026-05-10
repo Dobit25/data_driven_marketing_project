@@ -120,6 +120,9 @@ class RFMBuilder:
             | (transactions["COUPON_MATCH_DISC"] < 0)
         ).astype(np.int8)
 
+        # Flag: did this transaction line use a retail discount?
+        transactions["_has_retail_disc"] = (transactions["RETAIL_DISC"] < 0).astype(np.int8)
+
         # ------------------------------------------------------------------
         # Step 2: Basket-level aggregation (intermediate step)
         # ------------------------------------------------------------------
@@ -133,6 +136,7 @@ class RFMBuilder:
                 basket_net=("_net_line", "sum"),
                 basket_items=("QUANTITY", "sum"),
                 basket_has_coupon=("_has_coupon", "max"),
+                basket_has_retail_disc=("_has_retail_disc", "max"),
             )
             .reset_index()
         )
@@ -164,6 +168,7 @@ class RFMBuilder:
 
                 # Coupon usage
                 baskets_with_coupon=("basket_has_coupon", "sum"),
+                baskets_with_retail_disc=("basket_has_retail_disc", "sum"),
             )
             .reset_index()
         )
@@ -204,6 +209,11 @@ class RFMBuilder:
             hh_agg["baskets_with_coupon"] / hh_agg["total_baskets"]
         ).fillna(0).astype(np.float32)
 
+        # Retail discount usage rate: fraction of baskets using retail discounts
+        hh_agg["retail_disc_usage_rate"] = (
+            hh_agg["baskets_with_retail_disc"] / hh_agg["total_baskets"]
+        ).fillna(0).astype(np.float32)
+
         # Average monetary per basket (for Marketing/K-Means)
         hh_agg["avg_monetary"] = np.where(
             hh_agg["Frequency"] > 0,
@@ -231,6 +241,7 @@ class RFMBuilder:
             "distinct_stores",
             "tenure_weeks",
             "coupon_usage_rate",
+            "retail_disc_usage_rate",
             "first_purchase_week",
             "last_purchase_week",
         ]

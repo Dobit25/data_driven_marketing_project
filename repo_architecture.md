@@ -38,9 +38,9 @@ data_driven_marketing_project/
 │
 ├── models/                            # 🧠 Serialized models (joblib)
 │   ├── kmeans_model.pkl               #    K-Means + StandardScaler
-│   ├── bgnbd_model.pkl                #    BG/NBD probabilistic model (Tier 3)
-│   ├── gg_model.pkl                   #    Gamma-Gamma monetary model (Tier 3)
-│   └── xgboost_model.pkl             #    XGBoost regressor (Tier 2 — primary model)
+│   ├── bgnbd_model.pkl                #    BG/NBD probabilistic model (Reference)
+│   ├── gg_model.pkl                   #    Gamma-Gamma monetary model (Reference)
+│   └── xgboost_model.pkl             #    XGBoost regressor (Primary model)
 │
 ├── notebooks/                         # 📓 Jupyter Notebooks (Exploration)
 │   ├── eda_notebook.ipynb             #    EDA đầy đủ: phân phối, cohort, MBA (có outputs)
@@ -198,7 +198,7 @@ Tier 3 (Reference): MBG/NBD × Gamma-Gamma   → predicted_clv_6m
 
 | Method | Chức năng |
 |--------|-----------|
-| `segment_customers()` | K-Means clustering (K=4 fixed hoặc auto Silhouette search) |
+| `segment_customers()` | K-Means clustering (K=4 fixed) |
 | `_assign_segment_labels()` | Map cluster ID → business labels (Champions, Loyal, Promising, Needs Attention) |
 | `fit_bgnbd()` | Fit MBG/NBD → dự báo số lần mua 6 tháng tới |
 | `fit_gamma_gamma()` | Fit Gamma-Gamma → predicted_clv_6m (Tier 3) |
