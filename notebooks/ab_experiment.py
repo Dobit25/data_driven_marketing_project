@@ -170,13 +170,31 @@ for seg in SEG_ORDER:
     treat = g[g["treatment"] == 1]["holdout_sales"]
     ctrl  = g[g["treatment"] == 0]["holdout_sales"]
 
-    # Skip if either group too small
-    if len(treat) < 5 or len(ctrl) < 5:
-        print(f"\n  [{seg}] SKIPPED — insufficient sample")
+    t_mean, c_mean = treat.mean(), ctrl.mean()
+    # Retention metric: % with holdout purchases
+    t_retain = g[g["treatment"] == 1]["has_holdout"].mean() * 100
+    c_retain = g[g["treatment"] == 0]["has_holdout"].mean() * 100
+    # Holdout frequency (baskets)
+    t_freq = g[g["treatment"] == 1]["holdout_baskets"].mean()
+    c_freq = g[g["treatment"] == 0]["holdout_baskets"].mean()
+
+    # Skip statistical testing if either group too small (< 30)
+    if len(treat) < 30 or len(ctrl) < 30:
+        print(f"\n  === [{seg}] ===")
+        print(f"  [!] INSUFFICIENT SAMPLE (n_treat={len(treat)}, n_ctrl={len(ctrl)}). ATE omitted.")
+        results_list.append({
+            "Segment": seg, "n_treat": len(treat), "n_ctrl": len(ctrl),
+            "ARPU_treat": t_mean, "ARPU_ctrl": c_mean,
+            "ATE": np.nan, "Lift_pct": np.nan,
+            "t_stat": np.nan, "p_value": np.nan, "sig": "N/A",
+            "u_stat": np.nan, "u_pval": np.nan, "cohens_d": np.nan,
+            "CI_lower": np.nan, "CI_upper": np.nan,
+            "retention_treat": t_retain, "retention_ctrl": c_retain,
+            "freq_treat": t_freq, "freq_ctrl": c_freq,
+        })
         continue
 
     # Means
-    t_mean, c_mean = treat.mean(), ctrl.mean()
     diff = t_mean - c_mean
     lift = diff / c_mean * 100 if c_mean > 0 else 0
 
@@ -200,14 +218,6 @@ for seg in SEG_ORDER:
         boot_diffs.append(bt.mean() - bc.mean())
     ci_lo = np.percentile(boot_diffs, 2.5)
     ci_hi = np.percentile(boot_diffs, 97.5)
-
-    # Retention metric: % with holdout purchases
-    t_retain = g[g["treatment"] == 1]["has_holdout"].mean() * 100
-    c_retain = g[g["treatment"] == 0]["has_holdout"].mean() * 100
-
-    # Holdout frequency (baskets)
-    t_freq = g[g["treatment"] == 1]["holdout_baskets"].mean()
-    c_freq = g[g["treatment"] == 0]["holdout_baskets"].mean()
 
     sig = "***" if t_pval < 0.001 else "**" if t_pval < 0.01 else "*" if t_pval < 0.05 else "n.s."
 
@@ -331,6 +341,9 @@ axes[1].barh(results_df["Segment"][::-1], results_df["ATE"][::-1],
              edgecolor="white", height=0.5)
 for i, (_, row) in enumerate(results_df[::-1].iterrows()):
     seg_i = len(results_df) - 1 - i
+    if pd.isna(row["ATE"]):
+        axes[1].text(10, i, "Insufficient Data", va="center", color="gray", fontsize=10, fontstyle="italic")
+        continue
     axes[1].plot([row["CI_lower"], row["CI_upper"]],
                  [i, i], color="black", lw=2, zorder=5)
     axes[1].plot([row["CI_lower"], row["CI_upper"]],
@@ -421,7 +434,10 @@ for _, row in summary.iterrows():
     print(f"\n  [{row['Segment']}]")
     print(f"    Sample:     Treatment={row['n_treat']:,} | Control={row['n_ctrl']:,}")
     print(f"    ARPU:       ${row['ARPU_treat']:,.2f} vs ${row['ARPU_ctrl']:,.2f}")
-    print(f"    ATE:        ${row['ATE']:,.2f} ({row['Lift_pct']:+.1f}%) {row['sig']}")
+    if pd.isna(row['ATE']):
+        print(f"    ATE:        N/A (insufficient sample)")
+    else:
+        print(f"    ATE:        ${row['ATE']:,.2f} ({row['Lift_pct']:+.1f}%) {row['sig']}")
     print(f"    p-value:    {row['p_value']:.4f} | Cohen's d: {row['cohens_d']:.3f}")
     print(f"    95% CI:     [${row['CI_lower']:,.2f}, ${row['CI_upper']:,.2f}]")
     print(f"    Retention:  {row['retention_treat']:.1f}% vs {row['retention_ctrl']:.1f}%")

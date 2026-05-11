@@ -173,22 +173,30 @@ print("  Saved: 03_champions_deepdive.png")
 
 # %% Chart 4: Upgrade Funnel — Revenue Opportunity
 fig, ax = plt.subplots(figsize=(12, 6))
-champ_avg = rev.loc["Champions","avg_revenue"]
 opportunity = []
+empirical_rates = {"Loyal Customers": 0.077, "Promising": 0.039, "Needs Attention": 0.110}
+
 for seg in SEG_ORDER[1:]:
-    gap = champ_avg - rev.loc[seg,"avg_revenue"]
     n = rev.loc[seg,"n_customers"]
-    upgrade_rate = {"Loyal Customers":0.20, "Promising":0.10, "Needs Attention":0.05}[seg]
+    upgrade_rate = empirical_rates[seg]
+    
+    if seg == "Loyal Customers":
+        gap = rev.loc["Champions","avg_revenue"] - rev.loc[seg,"avg_revenue"]
+    elif seg == "Promising":
+        gap = rev.loc["Loyal Customers","avg_revenue"] - rev.loc[seg,"avg_revenue"]
+    elif seg == "Needs Attention":
+        gap = rev.loc[seg,"avg_revenue"]  # Re-engage target: double their current revenue
+        
     potential = gap * n * upgrade_rate
     opportunity.append({"Segment":seg, "Gap_per_customer":gap, "N":n, "Upgrade_rate":upgrade_rate, "Potential":potential})
     
 opp = pd.DataFrame(opportunity)
 bars = ax.barh(opp["Segment"], opp["Potential"], color=[SEG_COLORS[s] for s in opp["Segment"]], edgecolor="white", height=0.5)
 for bar, pot, rate in zip(bars, opp["Potential"], opp["Upgrade_rate"]):
-    ax.text(bar.get_width()+1000, bar.get_y()+bar.get_height()/2, f"${pot:,.0f} (upgrade {rate:.0%})", va="center", fontsize=11, fontweight="bold")
+    ax.text(bar.get_width()+1000, bar.get_y()+bar.get_height()/2, f"${pot:,.0f} (empirical lift {rate:.1%})", va="center", fontsize=11, fontweight="bold")
 
-ax.set_xlabel("Potential Revenue ($)")
-ax.set_title("REVENUE OPPORTUNITY — Upgrading Customers to Champions", fontsize=14, fontweight="bold")
+ax.set_xlabel("Incremental Revenue Opportunity ($)")
+ax.set_title("REVENUE OPPORTUNITY (Base Scenario: Empirical Retention Lift)", fontsize=14, fontweight="bold")
 ax.xaxis.set_major_formatter(mticker.StrMethodFormatter("${x:,.0f}"))
 plt.tight_layout()
 plt.savefig(FIGS / "04_revenue_opportunity.png", dpi=150, bbox_inches="tight")
