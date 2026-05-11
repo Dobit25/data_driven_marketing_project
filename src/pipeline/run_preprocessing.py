@@ -342,10 +342,11 @@ def run_pipeline(config_path: str) -> None:
 
     from src.features.mba_builder import MBABuilder
 
-    # MBA uses full transactions (not split) and product-level data
+    # MBA uses calibration transactions only (weeks 1-75) to avoid data leakage
+    # Holdout data (weeks 76-102) must NOT be used for pattern discovery
     # First merge product info for DEPARTMENT column
     products = loader.load_products()
-    txn_with_dept = transactions.merge(
+    txn_with_dept = cal_transactions.merge(
         products[["PRODUCT_ID", "DEPARTMENT"]],
         on="PRODUCT_ID", how="left",
     )
