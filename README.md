@@ -335,17 +335,7 @@ All parameters are centralized in `configs/config.yaml`:
 - **Model configs**: BG/NBD, Gamma-Gamma, XGBoost hyperparameters
 - **Output paths**: Where to save models, reports, and figures
 
----
 
-## 🧪 Testing
-
-```bash
-# Run all tests
-pytest tests/ -v
-
-# Run with coverage
-pytest tests/ --cov=src --cov-report=html
-```
 
 ---
 

@@ -37,6 +37,14 @@ class CLVEvaluator:
         self.figures_dir = Path(config["output"]["figures_dir"])
         self.figures_dir.mkdir(parents=True, exist_ok=True)
         self.metrics: Dict[str, float] = {}
+        
+        # Clear previous report on initialization
+        report_path = self.reports_dir / "evaluation_report.txt"
+        if report_path.exists():
+            try:
+                report_path.unlink()
+            except OSError:
+                pass
 
     def evaluate(
         self,
@@ -194,9 +202,9 @@ class CLVEvaluator:
         """Save evaluation report to text file."""
         report_path = self.reports_dir / "evaluation_report.txt"
 
-        with open(report_path, "w", encoding="utf-8") as f:
+        with open(report_path, "a", encoding="utf-8") as f:
             f.write("=" * 60 + "\n")
-            f.write("  CLV Model Evaluation Report\n")
+            f.write(f"  CLV Model Evaluation Report: {prediction_col}\n")
             f.write("=" * 60 + "\n\n")
             f.write(f"  Households evaluated: {len(merged):,}\n")
             f.write(f"  Prediction column:    {prediction_col}\n\n")

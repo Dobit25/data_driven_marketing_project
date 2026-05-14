@@ -374,7 +374,7 @@ class DemographicHandler:
 
             # Get frequency distribution from non-missing (real) values
             known_values = df.loc[df[col].notna(), col]
-            freq_dist = known_values.value_counts(normalize=True)
+            freq_dist = known_values.value_counts(normalize=True).sort_index()
 
             if len(freq_dist) == 0:
                 logger.warning(f"    {col}: no known values, leaving as NaN.")

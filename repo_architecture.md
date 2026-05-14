@@ -2,7 +2,7 @@
 
 **Dự án**: Customer Lifetime Value Prediction  
 **Team**: DSEB65A — Group 6  
-**Ngày cập nhật**: 2026-05-07  
+**Ngày cập nhật**: 2026-05-11  
 
 ---
 
@@ -37,25 +37,39 @@ data_driven_marketing_project/
 │   └── pipeline.log                   #    Log đầy đủ từ loguru (auto-rotation 10MB)
 │
 ├── models/                            # 🧠 Serialized models (joblib)
-│   ├── kmeans_model.pkl               #    K-Means + StandardScaler
-│   ├── bgnbd_model.pkl                #    BG/NBD probabilistic model (Reference)
+│   ├── kmeans_model.pkl               #    K-Means (K=4) + StandardScaler
+│   ├── bgnbd_model.pkl                #    MBG/NBD probabilistic model (Reference)
 │   ├── gg_model.pkl                   #    Gamma-Gamma monetary model (Reference)
 │   └── xgboost_model.pkl             #    XGBoost regressor (Primary model)
 │
-├── notebooks/                         # 📓 Jupyter Notebooks (Exploration)
+├── notebooks/                         # 📓 Notebooks & Analysis Scripts
 │   ├── eda_notebook.ipynb             #    EDA đầy đủ: phân phối, cohort, MBA (có outputs)
 │   ├── tung.py                        #    K=4 segmentation analysis & visualization (6 charts)
-│   └── rfm_clv_model.ipynb            #    Notebook modeling (stub, cần hoàn thiện)
+│   ├── business_proposal.py           #    Business strategy: revenue opportunity, radar charts (5 charts)
+│   ├── campaign2_analysis.py          #    Campaign performance & ROI analysis (5 charts)
+│   ├── ab_experiment.py               #    Quasi-experiment + PSM causal analysis (7 charts)
+│   └── rfm_clv_model.ipynb            #    Notebook modeling
 │
 ├── reports/                           # 📊 Báo cáo & kết quả
-│   ├── figures/                       #    Biểu đồ EDA (10 charts PNG)
-│   │   ├── weekly_transactions.png
-│   │   ├── sales_distribution.png
-│   │   ├── rfm_distributions.png
+│   ├── figures/                       #    Biểu đồ (34 charts PNG total)
+│   │   ├── 01-10_*.png                #    10 EDA charts (từ pipeline Step 7)
+│   │   ├── k4_*.png                   #    6 K-Means charts (từ tung.py)
 │   │   ├── calibration_plot.png       #    Predicted vs Actual CLV scatter
-│   │   └── ...
-│   ├── market_basket_rules.csv        #    Association rules (Apriori output)
-│   └── evaluation_report.txt          #    MAE, RMSE, MAPE metrics
+│   │   ├── campaign2_*.png            #    5 Campaign analysis charts
+│   │   ├── ab_*.png                   #    7 A/B experiment charts
+│   │   └── segmentation/             #    5 Business strategy charts
+│   ├── main.tex                       #    LaTeX research paper (1273 dòng)
+│   ├── main.pdf                       #    Compiled PDF report
+│   ├── market_basket_rules.csv        #    Association rules (Apriori, cal-only)
+│   ├── evaluation_report.txt          #    MAE, RMSE, MAPE metrics
+│   ├── ab_experiment_results.csv      #    PSM overall ATE results
+│   ├── ab_segment_results.csv         #    Segment-stratified ATE results
+│   ├── ab_covariate_balance.csv       #    Pre/Post matching SMD
+│   ├── segment_insight.md             #    Segment analysis insight (Vietnamese)
+│   ├── campaign_insight.md            #    Campaign performance insight
+│   ├── experiment_insight.md          #    Causal inference insight
+│   ├── market_basket_rules_insight.md #    MBA rules insight
+│   └── dong_update.md                 #    Update notes (causal integration)
 │
 ├── scripts/                           # 📜 Scripts phụ
 │   └── legacy/                        #    Scripts cũ (deprecated, giữ reference)
@@ -167,11 +181,13 @@ Chia transactions theo thời gian (KHÔNG random split):
 
 ### 2.5 `src/features/mba_builder.py` — MBABuilder
 
+> **Lưu ý:** MBA chỉ dùng **calibration-period transactions (weeks 1-75)** để tránh data leakage. 
+
 | Method | Chức năng |
 |--------|-----------|
-| `build_basket_matrix()` | Tạo ma trận nhị phân basket × DEPARTMENT |
-| `run_apriori()` | Chạy Apriori tìm frequent itemsets |
-| `generate_rules()` | Sinh association rules (support, confidence, lift) |
+| `build_basket_matrix()` | Tạo ma trận nhị phân basket × DEPARTMENT (197,788 baskets × 42 departments) |
+| `run_apriori()` | Chạy Apriori tìm frequent itemsets (min_support=0.01) |
+| `generate_rules()` | Sinh association rules: 977 rules (31 rules lift > 4.0) |
 | `save_rules()` | Export ra `reports/market_basket_rules.csv` |
 
 ---
@@ -192,7 +208,7 @@ Trích xuất features từ `causal_data.csv` (695MB) bằng chunked processing:
 **Kiến trúc 3 tầng:**
 ```
 Tier 1 (Baseline):  Rate-based Fallback     → predicted_clv_baseline
-Tier 2 (Primary):   XGBoost / LightGBM      → predicted_clv_supervised
+Tier 2 (Primary):   XGBoost                 → predicted_clv_supervised
 Tier 3 (Reference): MBG/NBD × Gamma-Gamma   → predicted_clv_6m
 ```
 
@@ -298,9 +314,9 @@ flowchart TD
         S6["Step 6: Demographics<br/>(DemographicHandler: KNN+RandomSample)"]
         S7["Step 7: EDA Charts<br/>(EDAPlotter: 10 charts)"]
         S8["Step 8: Promo Features<br/>(CausalFeatureBuilder: causal_data)"]
-        S9["Step 9: CLV Modeling<br/>(3-Tier: K-Means + BG/NBD + GG + Baseline + XGBoost)"]
+        S9["Step 9: CLV Modeling<br/>(3-Tier: K-Means + MBG/NBD + GG + Baseline + XGBoost)"]
         S10["Step 10: 3-Tier Evaluation<br/>(CLVEvaluator: MAE/RMSE/MAPE x3 tiers)"]
-        S11["Step 11: MBA<br/>(MBABuilder: Apriori rules)"]
+        S11["Step 11: MBA<br/>(MBABuilder: Apriori, cal-only)"]
         S12["Step 12: Summary<br/>(Log results)"]
 
         S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8 --> S9 --> S10 --> S11 --> S12
@@ -437,7 +453,7 @@ demographics:
 | Category | Libraries |
 |----------|-----------|
 | **Core** | Python ≥ 3.9, NumPy, Pandas, SciPy |
-| **ML** | scikit-learn, XGBoost, LightGBM, lifetimes |
+| **ML** | scikit-learn, XGBoost, lifetimes (MBG/NBD) |
 | **MBA** | mlxtend (Apriori) |
 | **Viz** | Matplotlib, Seaborn, Plotly |
 | **Config** | PyYAML, python-dotenv |

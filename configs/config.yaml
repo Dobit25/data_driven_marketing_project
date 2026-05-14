@@ -85,6 +85,7 @@ demographics:
 
     # Categorical demographics — impute with random sampling from real distribution
     categorical_method: "random_sample"
+    random_seed: 42
 
   # Columns and their types for imputation
   columns:

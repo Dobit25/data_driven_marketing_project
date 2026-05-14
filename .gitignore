@@ -60,3 +60,17 @@ desktop.ini
 htmlcov/
 .coverage
 .pytest_cache/
+
+# Bổ sung chặn rác log ở thư mục gốc
+stderr*.log
+stdout*.log
+pipeline.log
+
+# Bổ sung chặn file tạm của LaTeX (RẤT QUAN TRỌNG)
+# Hiện tại thư mục reports/ đang bị rác bởi các file này
+reports/*.aux
+reports/*.log
+reports/*.out
+reports/*.synctex.gz
+reports/*.fls
+reports/*.fdb_latexmk
